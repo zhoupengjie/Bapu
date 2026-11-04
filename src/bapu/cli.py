@@ -123,7 +123,7 @@ def main() -> None:
 @click.option("--model", "models", multiple=True, help="步骤=模型ID（或 步骤.参数=模型ID）")
 @click.option("--accept-licenses", is_flag=True, help="缺模型时不逐个询问，直接接受许可证并下载")
 @click.option("--lyrics", type=click.Path(exists=True, dir_okay=False, path_type=Path),
-              help="歌词文件（.ass / .lrc / .txt）；不给时沿用上次的")
+              help="参考歌词（.ass / .lrc / .txt），用来校正听写的用字；不给时沿用上次的")
 @click.option("--lang", help="歌词语言（目前支持 yue）")
 def run(audio: Path, out: Path | None, from_stage: str | None, until: str | None,
         sets: tuple[str, ...], models: tuple[str, ...], accept_licenses: bool,
@@ -161,7 +161,7 @@ def run(audio: Path, out: Path | None, from_stage: str | None, until: str | None
         state = "缓存" if o.status == "cached" else f"{o.record.seconds:.1f} s"
         click.echo(f"  {o.stage:<11} {state:<9} {_metrics_line(o.record.metrics)}")
     if "lyrics" not in sources:
-        click.echo("\n没有歌词文件，停在转谱之后。加 --lyrics <文件> 继续。")
+        click.echo("\n没有参考歌词：歌词全部来自听写，审查报告里每句都要确认。可以加 --lyrics <文件> 作参考。")
     if written:
         click.echo(f"\n审查报告：{written['review_md']}（{written['summary']}）")
 
@@ -188,6 +188,56 @@ def status(out: Path) -> None:
         click.echo(f"{r['index']:02d} {r['stage']:<11} {label[r['state']]:<5} {secs:<9} {_metrics_line(r['metrics'])}")
 
 
+@main.command()
+@click.argument("out", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option("--format", "formats", default="mid,svp,paste", show_default=True, help="mid / svp / paste，逗号分隔")
+@click.option("--audio", "audio", default="accompaniment,lead_dry", show_default=True,
+              help=".svp 里加哪些音频轨：accompaniment / lead_dry / none，逗号分隔")
+def export(out: Path, formats: str, audio: str) -> None:
+    """把 score.json 导出到 <工作目录>/export/。"""
+    import json
+
+    from bapu.export import midi, paste
+    from bapu.export import svp as svp_export
+
+    wd = WorkDir(out)
+    score_p = wd.root / "score.json"
+    if not score_p.exists():
+        raise click.ClickException("还没有 score.json：先用 --lyrics 跑完整个流程")
+    score = json.loads(score_p.read_text(encoding="utf-8"))
+    name = _slug(Path(wd.sources().get("source", ("song",))[0]).stem)
+    dest = wd.root / "export"
+    wanted = [f.strip() for f in formats.split(",") if f.strip()]
+    for f in wanted:
+        if f == "mid":
+            p = midi.write(score, dest / f"{name}.mid")
+        elif f == "paste":
+            p = paste.write(score, dest / f"{name}.paste.txt")
+        elif f == "svp":
+            p = svp_export.write(score, dest / f"{name}.svp", audio_tracks=_audio_tracks(wd, audio), name=name)
+        else:
+            raise click.ClickException(f"不认识的格式：{f}")
+        click.echo(f"{f:<6} {p}")
+    click.echo(f"{len(score['notes'])} 个音符，{score['tempo']['bpm']:g} BPM")
+
+
+AUDIO_TRACKS = {"accompaniment": ("separate", "instrumental"), "lead_dry": ("lead", "lead_dry")}
+
+
+def _audio_tracks(wd: WorkDir, spec: str) -> list[tuple[str, Path]]:
+    """Audio tracks for the .svp: the separated accompaniment and the dry lead
+    (for comparing the synthesised vocal with the original)."""
+    out = []
+    for key in [x.strip() for x in spec.split(",") if x.strip() and x.strip() != "none"]:
+        if key not in AUDIO_TRACKS:
+            raise click.ClickException(f"不认识的音频轨：{key}（可用：{', '.join(AUDIO_TRACKS)}、none）")
+        stage, artifact = AUDIO_TRACKS[key]
+        rec = wd.get(stage)
+        if rec and artifact in rec.outputs:
+            out.append((key.replace("_", " "), (wd.root / rec.outputs[artifact]).resolve()))
+    return out
+
+
 @main.group()
 def corrections() -> None:
     """修正文件 corrections.yaml。"""
@@ -205,7 +255,7 @@ def corrections_from_svp(out: Path, project: Path, track: int, dry_run: bool) ->
         entries, stats = compare.from_svp(wd, project, track)
     except (FileNotFoundError, KeyError, ValueError) as e:
         raise click.ClickException(str(e)) from None
-    click.echo(f"确认合并 {stats['merge_confirm']}，拒绝合并 {stats['merge_reject']}，"
+    click.echo(f"确认合并 {stats['merge_confirm']}，拒绝合并 {stats['merge_reject']}，字幕修正 {stats.get('line_text', 0)}，"
                f"人工版本的句子 {stats['line_version']}，音高 {stats['pitch']}")
     lines = sorted({e["line"] for e in entries if e["type"] == "line_version"})
     if lines:

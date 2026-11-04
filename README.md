@@ -26,17 +26,19 @@
 uv sync
 ```
 
-## 用法（v0.1 进行中：已到乐谱 JSON 和审查报告，导出在 M3）
+## 用法（v0.1）
 
 ```bash
 uv run bapu models list                     # 注册表里的模型、下载状态、许可证
 uv run bapu models pull <模型ID>             # 先显示许可证，确认后下载并校验 SHA-256
-uv run bapu run "<歌曲>.wav" --lyrics "<字幕>.ass"   # 输出到 work/<文件名>/，没变的步骤用缓存
+uv run bapu run "<歌曲>.wav" --lyrics "<字幕>.ass"   # 听写 + 参考歌词；输出到 work/<文件名>/，没变的步骤用缓存
+uv run bapu run "<歌曲>.wav"                       # 没有参考歌词时全部来自听写（每句都要确认）
 uv run bapu run "<歌曲>.wav" --set assign.gap_pen=0.4   # 改参数只重跑这一步和之后的步骤
 uv run bapu run "<歌曲>.wav" --model lead.dereverb_model=none
 uv run bapu status work/<文件名>
 uv run bapu corrections from-svp work/<文件名> "<工程>.svp"   # 把在 SV 里改过的地方读成修正
 uv run bapu eval work/<文件名> "<工程>.svp" --lines 2,10      # 自动版本和 SV 里的版本逐句对比
+uv run bapu export work/<文件名>                # 导出 MIDI（带歌词）、.svp 工程、粘贴文件到 export/
 uv run pytest                                # 单元测试（只用虚构数据）
 ```
 

@@ -88,6 +88,9 @@ def from_svp(wd: WorkDir, svp_path: Path, track: int = 1) -> tuple[list[dict[str
             stats["pitch"] += 1
 
     # Lines whose lyrics differ from the current plan become manual versions.
+    # If the words themselves differ from the lyric file (a word the subtitle
+    # missed or got wrong), the line's text is corrected first.
+    subtitle = _subtitle_tokens(wd)
     by_line: dict[int, list[int]] = {}
     for k, li in enumerate(m.sv_line):
         by_line.setdefault(li, []).append(k)
@@ -97,10 +100,36 @@ def from_svp(wd: WorkDir, svp_path: Path, track: int = 1) -> tuple[list[dict[str
         mine = [n for n in ours if n["line"] == li]
         if same and len(mine) == len(ks):
             continue
+        words = [sv_notes[k].lyric for k in ks if sv_notes[k].lyric not in ("-", "+")]
+        if li in subtitle and words != subtitle[li]:
+            entries.append({"type": "line_text", "line": li, "text": join_tokens(words)})
+            stats["line_text"] = stats.get("line_text", 0) + 1
         entries.append({"type": "line_version", "line": li,
                         "notes": [{"at": round(sv_notes[k].start, 3), "lyric": sv_notes[k].lyric} for k in ks]})
         stats["line_version"] += 1
     return entries, stats
+
+
+def join_tokens(words: list[str]) -> str:
+    """Words back into line text that tokenizes to the same words."""
+    out = ""
+    for w in words:
+        if out and (w[0].isascii() or out[-1].isascii()):
+            out += " "
+        out += w
+    return out
+
+
+def _subtitle_tokens(wd: WorkDir) -> dict[int, list[str]]:
+    """The run's final words per line (reference fused with dictation)."""
+    rec = wd.get("align")
+    if rec is None:
+        return {}
+    data = json.loads((wd.root / rec.outputs["alignment"]).read_text(encoding="utf-8"))
+    out: dict[int, list[str]] = {}
+    for t in data["tokens"]:
+        out.setdefault(t["line"], []).append(t["text"])
+    return out
 
 
 def evaluate(wd: WorkDir, svp_path: Path, track: int = 1, use: str = "auto_lyric") -> dict[str, Any]:

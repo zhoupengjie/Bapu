@@ -85,3 +85,26 @@ def test_from_svp_line_version_and_eval(tmp_path):
     assert [x["lyric"] for x in lv["notes"]] == ["天", "空", "-"]
     res = compare.evaluate(wd, f)
     assert res["total"] == {"notes": 3, "matched": 3, "same_lyric": 1, "same_kind": 1}
+
+
+def test_join_tokens_round_trips():
+    from bapu.lyrics.parse import tokenize
+
+    for words in (["天", "空"], ["I'm", "my", "天", "hello", "海"], ["hello", "world"]):
+        assert tokenize(compare.join_tokens(words)) == words
+
+
+def test_from_svp_fixes_missing_subtitle_words(tmp_path):
+    wd = make_run(tmp_path)
+    (wd.root / "05_splits" / "boundaries.json").write_text("[]", encoding="utf-8")
+    (wd.root / "08_align").mkdir()
+    (wd.root / "08_align" / "alignment.json").write_text(json.dumps({"tokens": [
+        {"text": "天", "line": 1}, {"text": "空", "line": 1}]}, ensure_ascii=False), encoding="utf-8")
+    wd.record("align", StageRecord(key="k", dir="08_align", outputs={"alignment": "08_align/alignment.json"}))
+    f = tmp_path / "c.svp"
+    # The user sang-in a word the subtitle missed on the "-" note.
+    f.write_text(json.dumps(project([n(0, 1, 60, "天"), n(1, 1, 62, "海"), n(2, 2, 64, "空")]), ensure_ascii=False),
+                 encoding="utf-8")
+    entries, stats = compare.from_svp(wd, f)
+    assert [e["type"] for e in entries] == ["line_text", "line_version"]
+    assert entries[0]["text"] == "天海空"

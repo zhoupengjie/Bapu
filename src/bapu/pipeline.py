@@ -85,11 +85,11 @@ def plan_keys(
     keys: dict[str, str] = {}
     for st in stages:
         params = resolve_params(st, overrides.get(st.name))
-        if any(n not in fps for n in st.inputs):
+        if any(n not in fps for n in st.inputs if n not in st.optional_inputs):
             break
         payload: dict[str, Any] = {
             "stage": st.name, "version": st.version, "params": params,
-            "inputs": {n: fps[n] for n in st.inputs},
+            "inputs": {n: fps.get(n) for n in st.inputs},
         }
         if st.corrections:
             payload["corrections"] = corr.fingerprint(corr.select(entries or [], st.corrections))
@@ -130,7 +130,7 @@ def run(
     if last is not None:
         blocked = [s.name for s in stages if s.index <= last and s.name not in keys]
         if blocked:
-            raise PipelineError(f"{blocked[0]} 缺少输入（需要歌词文件时请加 --lyrics）")
+            raise PipelineError(f"{blocked[0]} 缺少输入")
 
     artifacts: dict[str, Path] = {n: p.resolve() for n, p in sources.items()}
     outcomes: list[Outcome] = []
@@ -158,7 +158,7 @@ def run(
             out_dir = workdir.stage_dir(st.index, st.name)
             progress(ProgressEvent(st.name, "start"))
             ctx = StageContext(
-                inputs={n: artifacts[n] for n in st.inputs}, out_dir=out_dir, params=params,
+                inputs={n: artifacts[n] for n in st.inputs if n in artifacts}, out_dir=out_dir, params=params,
                 models=models, registry=registry, progress=StageProgress(st.name, progress),
                 corrections=corr.select(entries, st.corrections),
             )

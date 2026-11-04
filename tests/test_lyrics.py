@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from bapu.lyrics import g2p
 from bapu.lyrics.parse import parse_file, tokenize
-from bapu.stages.lyrics import build
+from bapu.lyrics.fuse import Tok, fuse, keys_for, prefer_exact, split_jyutping, sub_cost
 
 ASS = """[Script Info]
 Title: test
@@ -49,15 +49,59 @@ def test_g2p():
     assert g2p.english_letters("Don't") == "don't"
 
 
-def test_build_applies_text_and_lang_fixes(tmp_path):
-    p = tmp_path / "x.ass"
-    p.write_text(ASS, encoding="utf-8")
-    lines = parse_file(p)
-    fixes = [{"type": "line_text", "line": 1, "text": "天海", "_id": 1},
-             {"type": "line_lang", "line": 2, "lang": "en", "_id": 2},
-             {"type": "line_text", "line": 9, "text": "x", "_id": 3}]
-    data, used = build(lines, "yue", fixes)
-    assert [t["text"] for t in data[0]["tokens"]] == ["天", "海"]
-    assert {t["lang"] for t in data[1]["tokens"]} == {"en"}
-    assert data[1]["tokens"][2]["syll"] == 2
-    assert used == {1, 2}  # line 9 does not exist: stale
+def test_syllable_starts():
+    assert g2p.syllable_starts("jealousy") == [0, 3, 6]  # j-ea | l-ou | s-y
+    assert g2p.syllable_starts("hello") == [0, 3]
+    assert g2p.syllable_starts("stone") == [0]
+    for w in ("beautiful", "every", "rhythm"):
+        assert len(g2p.syllable_starts(w)) == g2p.english_syllables(w)
+
+
+def toks(words, line=1, source="ref"):
+    return [Tok(w, k, line, source=source) for w, k in zip(words, keys_for(words))]
+
+
+def dict_toks(words):
+    return [Tok(w, k, 1, time=float(i), source="dictation") for i, (w, k) in enumerate(zip(words, keys_for(words)))]
+
+
+def test_near_homophones():
+    assert split_jyutping("hung") == ("h", "ung")
+    assert split_jyutping("ngo") == ("ng", "o")
+    assert sub_cost("hung", "fung", False, False) < 0.75  # same final
+    assert sub_cost("hung", "sap", False, False) > 1
+
+
+def test_fuse_inserts_words_the_reference_missed():
+    out, events = fuse(toks(["天", "空", "海"]), dict_toks(["天", "空", "大", "大", "海"]))
+    assert [t.text for t in out] == ["天", "空", "大", "大", "海"]
+    added = [t for t in out if t.optional]
+    assert len(added) == 2 and len({t.group for t in added}) == 1
+    assert [e["type"] for e in events] == ["insert"]
+
+
+def test_fuse_prefers_exact_over_near_homophone():
+    # dictation "山 花 班 间": 班 (baan) rhymes with 间 (gaan) but 间 itself follows.
+    out, _ = fuse(toks(["山", "间"]), dict_toks(["山", "花", "班", "间"]))
+    assert [t.text for t in out] == ["山", "花", "班", "间"]
+    assert [t.optional for t in out] == [False, True, True, False]
+
+
+def test_fuse_substitution_becomes_alternative():
+    out, events = fuse(toks(["天", "空"]), dict_toks(["天", "风"]))
+    assert [t.text for t in out] == ["天", "空"]
+    assert out[1].alt is not None and out[1].alt.text == "风"
+
+
+def test_fuse_keeps_reference_english_and_locked_lines():
+    out, events = fuse(toks(["hello", "海"]), dict_toks(["哈", "佬", "海"]))
+    assert [t.text for t in out] == ["hello", "海"]
+    assert events and events[0]["reason"] == "english"
+    out, events = fuse(toks(["天", "海"]), dict_toks(["天", "大", "海"]), locked_lines={1})
+    assert [t.text for t in out] == ["天", "海"]
+
+
+def test_fuse_drops_stray_english_in_chinese_passage():
+    out, _ = fuse(toks(["天", "空", "海", "洋"]), dict_toks(["天", "ok", "大", "海", "洋"]))
+    assert [t.text for t in out if not t.optional] == ["天", "空", "海", "洋"]
+    assert all(not t.latin for t in out)

@@ -25,6 +25,7 @@ from typing import Any
 import numpy as np
 
 from bapu.corrections import match_time
+from bapu.lyrics import g2p
 from bapu.stages.base import Stage, StageContext, StageResult
 
 BIG = 1e6
@@ -103,7 +104,6 @@ def _run(ctx: StageContext) -> StageResult:
     p = ctx.params
     tol = float(p["tolerance"])
     notes = json.loads(ctx.inputs["merged_notes"].read_text(encoding="utf-8"))["notes"]
-    lyr = json.loads(ctx.inputs["lyrics_lines"].read_text(encoding="utf-8"))
     ali = json.loads(ctx.inputs["alignment"].read_text(encoding="utf-8"))
     tempo = json.loads(ctx.inputs["tempo"].read_text(encoding="utf-8"))
     boundaries = json.loads(ctx.inputs["boundaries"].read_text(encoding="utf-8"))
@@ -113,17 +113,26 @@ def _run(ctx: StageContext) -> StageResult:
     used: set[int] = set()
     conflicts: list[dict[str, Any]] = []
 
-    tokens = [dict(t, line=ln["line"]) for ln in lyr["lines"] for t in ln["tokens"]]
-    for t, a in zip(tokens, ali["tokens"]):
-        t.update(t0=a["t0"], t1=a["t1"], conf=a["conf"])
+    # The aligner's output carries the final tokens (after dictation fusion).
+    tokens = ali["tokens"]
     line_info = {ln["line"]: ln for ln in ali["lines"]}
-    sub_lines = {ln["line"]: ln for ln in lyr["lines"]}
+    sub_lines: dict[int, dict[str, Any]] = {}
+    for t in tokens:
+        sub_lines.setdefault(t["line"], {"tokens": []})["tokens"].append(t)
 
-    # Syllable start times; English multi-syllable words spread over the word.
+    # Syllable start times. A later syllable of an English word starts where the
+    # aligner put the first letter of that syllable; without letter times it is
+    # spread evenly over the word.
     syl: list[tuple[int, bool, float]] = []  # (token index, first syllable?, time)
     for k, t in enumerate(tokens):
+        starts = g2p.syllable_starts(t["text"]) if t["syll"] > 1 and g2p.is_latin(t["text"]) else None
+        letter_t = t.get("letter_t")
         for s in range(t["syll"]):
-            syl.append((k, s == 0, t["t0"] + s * (t["t1"] - t["t0"]) / t["syll"]))
+            if s and starts and letter_t and len(starts) == t["syll"]:
+                when = letter_t[starts[s]]
+            else:
+                when = t["t0"] + s * (t["t1"] - t["t0"]) / t["syll"]
+            syl.append((k, s == 0, when))
 
     forbid = np.zeros(len(notes), bool)
     require = np.zeros(len(notes), bool)
@@ -189,7 +198,7 @@ def _run(ctx: StageContext) -> StageResult:
     for c in tempo_fix:
         used.add(c["_id"])
 
-    onset_score = {round(b["time"], 3): b for b in boundaries}
+    b_times = [b["time"] for b in boundaries]  # boundaries are in time order
     threshold = float(p["line_conf_threshold"])
     score_notes = []
     for j, n in enumerate(notes):
@@ -208,7 +217,8 @@ def _run(ctx: StageContext) -> StageResult:
             flags.append("sustain_after_rest")
         if line_info.get(line_of_note[j], {}).get("conf", 1.0) < threshold and line_of_note[j] not in locked_lines:
             flags.append("low_conf_line")
-        b = onset_score.get(round(n["start"], 3))
+        bi = match_time(b_times, n["start"], 0.002)
+        b = boundaries[bi] if bi is not None else None
         raw_pitch = float(pitch_fix.get(j, n["pitch"]))
         score_notes.append({
             "index": j + 1,
@@ -230,15 +240,17 @@ def _run(ctx: StageContext) -> StageResult:
         })
 
     lines = []
-    for ln in lyr["lines"]:
-        li = line_info.get(ln["line"], {})
+    for ln in ali["lines"]:
+        li = ln
+        ln_tokens = sub_lines.get(ln["line"], {"tokens": []})["tokens"]
         mine = [s for s in score_notes if s["line"] == ln["line"]]
         lines.append({
             "line": ln["line"], "start": ln["start"], "end": ln["end"],
             "t0": li.get("t0"), "t1": li.get("t1"), "conf": li.get("conf"),
-            "lang": sorted({t["lang"] for t in ln["tokens"]}),
+            "lang": sorted({t["lang"] for t in ln_tokens}),
             "version": "manual" if ln["line"] in locked_lines else "auto",
-            "syllables": sum(t["syll"] for t in ln["tokens"]),
+            "syllables": sum(t["syll"] for t in ln_tokens),
+            "from_dictation": sum(1 for t in ln_tokens if t.get("source") == "dictation"),
             "notes": len(mine),
             "sustain": sum(1 for s in mine if s["kind"] == SUSTAIN),
             "first_note": mine[0]["index"] if mine else None,
@@ -251,7 +263,7 @@ def _run(ctx: StageContext) -> StageResult:
         "tempo": {"bpm": bpm, "source": "user" if tempo_fix else "auto", "first_beat": tempo["first_beat"],
                   "beat_phase_s": tempo["beat_phase_s"], "confidence": tempo["confidence"],
                   "time_signature": tempo["time_signature"]},
-        "lang": lyr["lang"],
+        "lang": ali.get("lang", "yue"),
         "lines": lines,
         "notes": score_notes,
         "checks": {"sequence_matches_lyrics": sequence_ok, "late_switches": late},
@@ -279,9 +291,9 @@ def _run(ctx: StageContext) -> StageResult:
 STAGE = Stage(
     name="assign",
     title="分配字到音符",
-    index=8,
-    version="1",
-    inputs=("merged_notes", "boundaries", "lyrics_lines", "alignment", "tempo"),
+    index=9,
+    version="4",
+    inputs=("merged_notes", "boundaries", "alignment", "tempo"),
     outputs=("score",),
     defaults={"gap_pen": 0.3, "lead_pen": 2.0, "cap": 1.5, "rest_gap": 0.25, "tolerance": 0.03,
               "line_conf_threshold": 0.15},

@@ -46,3 +46,5 @@ class Stage:
     title: str = ""
     # correction entry types this stage applies; they are part of its cache key
     corrections: tuple[str, ...] = ()
+    # inputs the stage can run without (e.g. the reference lyric file)
+    optional_inputs: tuple[str, ...] = ()

@@ -83,12 +83,28 @@ def build_review(wd: WorkDir, score: dict[str, Any]) -> dict[str, Any]:
         prev_end = n["start"] + n["dur"]
     del prev_end
 
+    # Possible words missing from the subtitle: two or more "-" in a row where
+    # one of them starts like a new syllable. (A long run alone is common: one
+    # word sung over several notes.)
+    missing: dict[int, dict[str, Any]] = {}
+    run: list[dict[str, Any]] = []
+    for n in notes + [{"kind": "end"}]:
+        if n["kind"] == "sustain" and (not run or n["line"] == run[0]["line"]):
+            run.append(n)
+            continue
+        strong = [x for x in run if x["conf"]["onset"] is not None and x["conf"]["onset"] >= STRONG_ONSET]
+        if len(run) >= 2 and strong and "manual_line" not in run[0]["flags"]:
+            missing.setdefault(run[0]["line"], {"notes": [x["index"] for x in run], "time": run[0]["start"]})
+        run = [n] if n["kind"] == "sustain" else []
+
     threshold = (wd.get("assign").params or {}).get("line_conf_threshold", 0.15)
     lines = []
     for ln in score["lines"]:
         low = ln["conf"] is not None and ln["conf"] < threshold and ln["version"] == "auto"
         short = ln["notes"] < ln["syllables"]
-        lines.append({**ln, "low_conf": low, "fewer_notes": short, "attention": low or short})
+        miss = missing.get(ln["line"])
+        lines.append({**ln, "low_conf": low, "fewer_notes": short, "maybe_missing": miss,
+                      "attention": low or short or bool(miss)})
 
     # Corrections: which entries no longer apply, which conflict.
     entries = corr.load(wd.corrections_path) if wd.corrections_path.exists() else []
@@ -103,19 +119,50 @@ def build_review(wd: WorkDir, score: dict[str, Any]) -> dict[str, Any]:
     stale = [{"id": e["_id"], "type": e["type"], "at": e.get("at"), "line": e.get("line")}
              for e in entries if e["type"] in handled and e["_id"] not in used]
 
+    # What dictation changed or flagged (times and line numbers only).
+    ali = _read(wd, "align", "alignment.json") or {}
+    mode = ali.get("mode") or "fused"
+    dictation = []
+    for d in ali.get("decisions", []):
+        if d["type"] == "insert":
+            dictation.append({"kind": "insert", "line": d["line"], "time": d["time"], "conf": d["conf"],
+                              "status": "已补上（参考歌词里没有）" if d["kept"] else "录音不支持，没补",
+                              "attention": d["kept"]})
+        else:
+            dictation.append({"kind": "alternative", "line": d["line"], "time": d["time"],
+                              "conf": d["conf_dictation"] if d["replaced"] else d["conf_reference"],
+                              "status": "改用了听写的字" if d["replaced"] else "保留参考歌词的字",
+                              "attention": d["replaced"]})
+    for e in _read(wd, "lyrics", "fusion.json") or []:
+        if e["type"] in ("differs", "extra_ignored"):
+            why = {"english": "有英文，听写不可靠", "length": "字数不同", "too_long": "听写多出的字太多",
+                   "locked": "这一句你修正过"}.get(e.get("reason", ""), "")
+            dictation.append({"kind": e["type"], "line": e["line"], "time": e.get("time"), "conf": None,
+                              "status": f"听写和参考不一致，保留参考（{why}）", "attention": e.get("reason") == "length"})
+    dictation.sort(key=lambda x: (x["line"], x["time"] or 0))
+    if mode == "dictation_only":
+        for ln in lines:
+            ln["attention"] = True
+            ln["dictation_only"] = True
+
     attention = (sum(m["attention"] for m in merges) + sum(s["attention"] for s in sustains)
-                 + sum(ln["attention"] for ln in lines) + len(stale) + len(conflict_ids))
+                 + sum(ln["attention"] for ln in lines) + len(stale) + len(conflict_ids)
+                 + sum(d["attention"] for d in dictation))
     return {
         "format": "bapu.review/1",
         "summary": {
             "notes": len(notes), "lines": len(lines), "attention": attention,
             "auto_merges": sum(m["attention"] for m in merges), "sustain": len(sustains),
-            "low_conf_lines": sum(ln["low_conf"] for ln in lines), "manual_lines": sum(ln["version"] == "manual" for ln in lines),
+            "low_conf_lines": sum(ln["low_conf"] for ln in lines),
+            "maybe_missing_lines": sum(bool(ln["maybe_missing"]) for ln in lines), "manual_lines": sum(ln["version"] == "manual" for ln in lines),
             "stale_corrections": len(stale), "conflicting_corrections": len(conflict_ids),
             "tempo_bpm": score["tempo"]["bpm"], "tempo_source": score["tempo"]["source"],
             "sequence_matches_lyrics": score["checks"]["sequence_matches_lyrics"],
             "corrections": len(entries),
+            "lyrics_mode": mode,
+            "dictation_changes": sum(d["attention"] for d in dictation),
         },
+        "dictation": dictation,
         "merges": merges,
         "sustains": sustains,
         "lines": lines,
@@ -132,12 +179,20 @@ def render_md(r: dict[str, Any]) -> str:
         "只列时间、音符编号（从 1 开始）、句号和置信度，不含歌词。",
         "",
         f"- 音符 {s['notes']} 个，句子 {s['lines']} 句；拍速 {s['tempo_bpm']:g} BPM（{'你设定的' if s['tempo_source'] == 'user' else '自动估计'}）",
-        f"- 字序和歌词文件一致：{'是' if s['sequence_matches_lyrics'] else '否'}",
+        f"- 分配后的字序和歌词一致：{'是' if s['sequence_matches_lyrics'] else '否'}",
         f"- **需要你确认 {s['attention']} 条**：自动合并 {s['auto_merges']}、低置信度句子 {s['low_conf_lines']}、"
-        f"失效修正 {s['stale_corrections']}、冲突修正 {s['conflicting_corrections']}，以及下面标 ⚠ 的 `-`",
+        f"可能漏字的句子 {s['maybe_missing_lines']}、失效修正 {s['stale_corrections']}、冲突修正 {s['conflicting_corrections']}，以及下面标 ⚠ 的 `-`",
         f"- 修正文件里有 {s['corrections']} 条；用人工版本的句子 {s['manual_lines']} 句",
+        "- 歌词来源：" + ("只有听写（没有参考歌词），每句都要确认" if s["lyrics_mode"] == "dictation_only"
+                       else f"听写 + 参考歌词；听写改动了 {s['dictation_changes']} 处"),
         "",
     ]
+    if r["dictation"]:
+        out += ["## 听写和参考歌词", "", "| 时间 | 句 | 置信度 | 结果 |", "|---|---|---|---|"]
+        for d in r["dictation"]:
+            conf = f"{d['conf']:.2f}" if d["conf"] is not None else "—"
+            out.append(f"| {mmss(d['time'])} | L{d['line']:02d} | {conf} | {'⚠ ' if d['attention'] else ''}{d['status']} |")
+        out.append("")
     if r["stale_corrections"] or r["conflicting_corrections"]:
         out += ["## 修正", "", "| 条目 | 类型 | 位置 | 状态 |", "|---|---|---|---|"]
         for e in r["stale_corrections"]:
@@ -161,6 +216,11 @@ def render_md(r: dict[str, Any]) -> str:
                 why.append("对齐置信度低")
             if ln["fewer_notes"]:
                 why.append("音符比音节少，借用了相邻句的音符")
+            if ln.get("dictation_only"):
+                why.append("没有参考歌词，全部来自听写")
+            if ln["maybe_missing"]:
+                m = ln["maybe_missing"]
+                why.append(f"可能字幕漏字：音符 {m['notes'][0]}–{m['notes'][-1]} 连续是 `-`，其中有明显的新起音")
             out.append(f"| L{ln['line']:02d} | {mmss(ln['t0'])}–{mmss(ln['t1'])} | {ln['conf']:.2f} | "
                        f"{ln['syllables']} / {ln['notes']} | {'；'.join(why)} |")
         out.append("")

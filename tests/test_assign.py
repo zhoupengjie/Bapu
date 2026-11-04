@@ -81,26 +81,21 @@ def stage_inputs(tmp_path: Path):
     # 6 notes: syllables at 0, 1, 2, 3.5, then "hello" (2 syllables) at 5.0-6.0
     notes = [{"start": t, "dur": 0.45, "pitch": 60.3 + i, "merged_from": [i + 1], "merges": []}
              for i, t in enumerate([0.0, 1.0, 2.0, 2.5, 3.5, 5.0, 5.5])]
-    lyr = {"lang": "yue", "lines": [
-        {"line": 1, "start": 0.0, "end": 2.9, "tokens": [
-            {"text": "天", "lang": "yue", "syll": 1, "letters": "tin"},
-            {"text": "空", "lang": "yue", "syll": 1, "letters": "hung"},
-            {"text": "海", "lang": "yue", "syll": 1, "letters": "hoi"}]},
-        {"line": 2, "start": 3.4, "end": 6.0, "tokens": [
-            {"text": "洋", "lang": "yue", "syll": 1, "letters": "joeng"},
-            {"text": "hello", "lang": "en", "syll": 2, "letters": "hello"}]},
-    ]}
-    ali = {"tokens": [{"t0": 0.0, "t1": 0.4, "conf": 0.9}, {"t0": 1.0, "t1": 1.4, "conf": 0.8},
-                      {"t0": 2.0, "t1": 2.4, "conf": 0.7}, {"t0": 3.5, "t1": 3.9, "conf": 0.05},
-                      {"t0": 5.0, "t1": 6.0, "conf": 0.6}],
-           "lines": [{"line": 1, "t0": 0.0, "t1": 2.4, "conf": 0.7}, {"line": 2, "t0": 3.5, "t1": 6.0, "conf": 0.05}]}
+    # The aligner's output carries the final tokens with their timing.
+    words = [("天", "yue", 1, 1, 0.0, 0.4, 0.9), ("空", "yue", 1, 1, 1.0, 1.4, 0.8), ("海", "yue", 1, 1, 2.0, 2.4, 0.7),
+             ("洋", "yue", 1, 2, 3.5, 3.9, 0.05), ("hello", "en", 2, 2, 5.0, 6.0, 0.6)]
+    ali = {"lang": "yue", "mode": "fused",
+           "tokens": [{"text": w, "lang": lg, "syll": sy, "line": li, "t0": a, "t1": b, "conf": c,
+                       "source": "both", "flags": []} for w, lg, sy, li, a, b, c in words],
+           "lines": [{"line": 1, "start": 0.0, "end": 2.9, "t0": 0.0, "t1": 2.4, "conf": 0.7},
+                     {"line": 2, "start": 3.4, "end": 6.0, "t0": 3.5, "t1": 6.0, "conf": 0.05}],
+           "decisions": []}
     tempo = {"bpm": 125.0, "first_beat": 0.0, "beat_phase_s": 0.0, "confidence": "high", "time_signature": "4/4"}
     d = tmp_path / "in"
     d.mkdir()
     return {
         "merged_notes": write(d / "notes.json", {"notes": notes}),
         "boundaries": write(d / "b.json", [{"first": 2, "time": 2.45, "score": 0.9, "merge": False, "source": "none"}]),
-        "lyrics_lines": write(d / "lyrics.json", lyr),
         "alignment": write(d / "alignment.json", ali),
         "tempo": write(d / "tempo.json", tempo),
     }
@@ -157,3 +152,23 @@ def test_review_has_no_lyric_text(tmp_path, stage_inputs):
         assert word not in md and word not in review
     assert "失效" in md  # the kind entry at 9.0 s matches no note
     assert json.loads(review)["summary"]["stale_corrections"] == 1
+
+
+def test_review_flags_possible_missing_words(tmp_path, stage_inputs):
+    # Two extra notes after "海" whose starts look like new syllables.
+    notes = json.loads(stage_inputs["merged_notes"].read_text(encoding="utf-8"))["notes"]
+    notes[3:4] = [{"start": 2.5, "dur": 0.3, "pitch": 63.0, "merged_from": [4], "merges": []},
+                  {"start": 2.8, "dur": 0.3, "pitch": 62.0, "merged_from": [5], "merges": []}]
+    write(stage_inputs["merged_notes"], {"notes": notes})
+    write(stage_inputs["boundaries"], [{"first": 2, "time": 2.45, "score": 0.2, "merge": False, "source": "none"},
+                                      {"first": 3, "time": 2.8, "score": 0.9, "merge": False, "source": "none"}])
+    _, score = run_assign(tmp_path, stage_inputs)
+    assert [x["kind"] for x in score["notes"][3:5]] == ["sustain", "sustain"]
+    assert score["notes"][4]["conf"]["onset"] == 0.9
+    wd = WorkDir(tmp_path)
+    wd.record("assign", StageRecord(key="k", dir="08_assign", outputs={"score": "08_assign/score.json"},
+                                    params=dict(assign.STAGE.defaults)))
+    report.finalize(wd)
+    review = json.loads((tmp_path / "review.json").read_text(encoding="utf-8"))
+    flagged = {ln["line"]: ln["maybe_missing"] for ln in review["lines"] if ln["maybe_missing"]}
+    assert flagged == {1: {"notes": [4, 5], "time": 2.5}}

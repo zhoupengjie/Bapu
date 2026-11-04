@@ -72,9 +72,12 @@ def align_tokens(em, tokens: list[dict[str, Any]], dictionary: dict[str, int]) -
     for t, sps in zip(tokens, per):
         if sps:
             out.append({"t0": round(sps[0].start * FRAME, 3), "t1": round(sps[-1].end * FRAME, 3),
-                        "conf": round(float(np.mean([s.score for s in sps])), 4), "aligned": True})
+                        "conf": round(float(np.mean([s.score for s in sps])), 4), "aligned": True,
+                        # start of every aligned letter, used to place English syllables
+                        "letter_t": [round(s.start * FRAME, 3) for s in sps]
+                        if len(sps) == len(t["letters"]) else None})
         else:
-            out.append({"t0": None, "t1": None, "conf": 0.0, "aligned": False})
+            out.append({"t0": None, "t1": None, "conf": 0.0, "aligned": False, "letter_t": None})
     # Tokens without letters (no reading): place them between their neighbours.
     for k, o in enumerate(out):
         if o["t0"] is None:
@@ -82,6 +85,62 @@ def align_tokens(em, tokens: list[dict[str, Any]], dictionary: dict[str, int]) -
             nxt = next((out[j]["t0"] for j in range(k + 1, len(out)) if out[j]["t0"] is not None), prev)
             o["t0"], o["t1"] = prev, max(prev, nxt)
     return out
+
+
+def resolve(em, tokens: list[dict[str, Any]], dictionary: dict[str, int], *, keep_conf: float, alt_margin: float,
+            alt_min: float = 0.3) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Settle tokens the lyrics stage left open, by how well the recording supports them.
+
+    Pass A aligns the primary sequence (inserted words kept, reference words
+    where there is an alternative); pass B drops the inserted words and uses
+    the alternatives. Words inserted together stay if their mean pass-A
+    confidence is at least `keep_conf`; an alternative replaces the reference word only if its
+    confidence is at least `alt_min` and higher by `alt_margin` (on a confirmed
+    line the aligner gave a correct reference word 0.005 and a wrong dictated
+    one 0.20). Returns (final tokens, decisions).
+    """
+    open_k = [k for k, t in enumerate(tokens) if t.get("optional") or t.get("alt")]
+    if not open_k:
+        return [dict(t) for t in tokens], []
+    a = align_tokens(em, tokens, dictionary)
+    seq_b, map_b = [], {}
+    for k, t in enumerate(tokens):
+        if t.get("optional"):
+            continue
+        map_b[k] = len(seq_b)
+        seq_b.append(dict(t, **{x: t["alt"][x] for x in ("text", "letters", "lang", "syll")}) if t.get("alt") else t)
+    b = align_tokens(em, seq_b, dictionary) if seq_b else []
+
+    # Words dictation inserted together are judged together (a short syllable
+    # between others can get a near-zero confidence on its own).
+    group_conf: dict[Any, list[float]] = {}
+    for k, t in enumerate(tokens):
+        if t.get("optional"):
+            group_conf.setdefault(t.get("group") or ("k", k), []).append(a[k]["conf"])
+    final, decisions = [], []
+    for k, t in enumerate(tokens):
+        t = dict(t)
+        if t.get("optional"):
+            g = group_conf[t.get("group") or ("k", k)]
+            keep = float(np.mean(g)) >= keep_conf
+            decisions.append({"type": "insert", "line": t["line"], "time": a[k]["t0"], "conf": a[k]["conf"],
+                              "group_conf": round(float(np.mean(g)), 4), "kept": keep})
+            if not keep:
+                continue
+            t["flags"] = list(t.get("flags", [])) + ["added_from_dictation"]
+        elif t.get("alt"):
+            ca, cb = a[k]["conf"], b[map_b[k]]["conf"]
+            use_alt = cb >= ca + alt_margin and cb >= alt_min
+            decisions.append({"type": "alternative", "line": t["line"], "time": a[k]["t0"],
+                              "conf_reference": ca, "conf_dictation": cb, "replaced": use_alt})
+            if use_alt:
+                t.update({x: t["alt"][x] for x in ("text", "letters", "lang", "syll")})
+                t["source"] = "dictation"
+                t["flags"] = list(t.get("flags", [])) + ["replaced_by_dictation"]
+        t.pop("alt", None)
+        t["optional"] = False
+        final.append(t)
+    return final, decisions
 
 
 def _run(ctx: StageContext) -> StageResult:
@@ -107,35 +166,47 @@ def _run(ctx: StageContext) -> StageResult:
         if device == "cuda":
             torch.cuda.empty_cache()
     ctx.progress("维特比对齐", 0.95)
-    timing = align_tokens(em, tokens, MMS_FA.get_dict(star=None))
+    dictionary = MMS_FA.get_dict(star=None)
+    tokens, decisions = resolve(em, tokens, dictionary, keep_conf=float(ctx.params["keep_conf"]),
+                                alt_margin=float(ctx.params["alt_margin"]), alt_min=float(ctx.params["alt_min"]))
+    timing = align_tokens(em, tokens, dictionary)
+    for t, x in zip(tokens, timing):
+        t.update(x)
 
     by_line: dict[int, list[int]] = {}
     for k, t in enumerate(tokens):
         by_line.setdefault(t["line"], []).append(k)
     lines_out = []
     for ln in data["lines"]:
-        ks = by_line[ln["line"]]
-        confs = [timing[k]["conf"] for k in ks]
-        t0, t1 = timing[ks[0]]["t0"], timing[ks[-1]]["t1"]
+        ks = by_line.get(ln["line"])
+        if not ks:
+            continue
+        confs = [tokens[k]["conf"] for k in ks]
+        t0, t1 = tokens[ks[0]]["t0"], tokens[ks[-1]]["t1"]
         lines_out.append({
-            "line": ln["line"], "t0": t0, "t1": t1,
+            "line": ln["line"], "start": ln["start"], "end": ln["end"], "t0": t0, "t1": t1,
             "conf": round(min(confs), 4), "conf_mean": round(float(np.mean(confs)), 4),
             "start_offset": round(t0 - ln["start"], 3) if ln["start"] is not None else None,
         })
     out = ctx.out_dir / "alignment.json"
-    out.write_text(json.dumps({"model": spec.id, "frames": int(em.shape[0]), "tokens": timing, "lines": lines_out},
-                              indent=1), encoding="utf-8")
+    out.write_text(json.dumps({"model": spec.id, "lang": data["lang"], "mode": data.get("mode"),
+                               "frames": int(em.shape[0]), "tokens": tokens, "lines": lines_out,
+                               "decisions": decisions}, ensure_ascii=False, indent=1), encoding="utf-8")
 
-    confs = np.array([t["conf"] for t in timing])
+    confs = np.array([t["conf"] for t in tokens])
     offsets = [abs(ln["start_offset"]) for ln in lines_out if ln["start_offset"] is not None]
     return StageResult(
         outputs={"alignment": out},
         metrics={
-            "tokens": len(timing),
+            "tokens": len(tokens),
             "conf_median": round(float(np.median(confs)), 3),
             "tokens_conf_below_0.2": int(np.sum(confs < 0.2)),
             "lines_conf_below_threshold": sum(1 for ln in lines_out if ln["conf"] < float(ctx.params["line_conf_threshold"])),
             "max_line_offset_s": round(max(offsets), 3) if offsets else None,
+            "inserted_kept": sum(1 for d in decisions if d["type"] == "insert" and d["kept"]),
+            "inserted_dropped": sum(1 for d in decisions if d["type"] == "insert" and not d["kept"]),
+            "replaced_by_dictation": sum(1 for d in decisions if d["type"] == "alternative" and d["replaced"]),
+            "alternatives_rejected": sum(1 for d in decisions if d["type"] == "alternative" and not d["replaced"]),
         },
     )
 
@@ -143,11 +214,12 @@ def _run(ctx: StageContext) -> StageResult:
 STAGE = Stage(
     name="align",
     title="对齐",
-    index=7,
-    version="1",
+    index=8,
+    version="5",
     inputs=("lead_dry", "lyrics_lines"),
     outputs=("alignment",),
-    defaults={"model": "mms-fa", "chunk_s": 20.0, "context_s": 2.0, "line_conf_threshold": 0.15},
+    defaults={"model": "mms-fa", "chunk_s": 20.0, "context_s": 2.0, "line_conf_threshold": 0.15,
+              "keep_conf": 0.15, "alt_margin": 0.15, "alt_min": 0.3},
     model_params={"model": "align"},
     run=_run,
 )
