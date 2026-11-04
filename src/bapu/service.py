@@ -331,6 +331,7 @@ class JobService:
                 "verified": spec.verified, "size": spec.total_size, "status": self.registry.status(spec),
                 "license": vars(spec.license), "license_accepted": self.registry.license_accepted(spec),
                 "downloading": spec.id in self._pulls and self._pulls[spec.id].is_alive(),
+                "download": self.registry.download_info(spec),
             })
         return out
 

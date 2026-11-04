@@ -90,13 +90,10 @@ def blicks(notes: list[dict[str, Any]], bpm: float) -> list[tuple[int, int]]:
     return [(s, e - s) for s, e in spans]
 
 
-def build(score: dict[str, Any], *, audio_tracks: Sequence[tuple[str, Path]] = (), name: str = "Bapu") -> dict[str, Any]:
-    bpm = float(score["tempo"]["bpm"])
-    num, den = (int(x) for x in str(score["tempo"].get("time_signature", "4/4")).split("/"))
-    song_lang = LANG.get(score.get("lang", ""), "")
-    notes = []
-    for n, (onset, dur) in zip(score["notes"], blicks(score["notes"], bpm)):
-        notes.append({
+def _sv_notes(notes: list[dict[str, Any]], bpm: float, song_lang: str) -> list[dict[str, Any]]:
+    out = []
+    for n, (onset, dur) in zip(notes, blicks(notes, bpm)):
+        out.append({
             "uuid": uuid.uuid4().hex[:16], "musicalType": "singing",
             "lyrics": n["lyric"], "phonemes": "", "accent": "",
             "onset": onset, "duration": dur, "pitch": int(n["pitch"]), "detune": 0,
@@ -104,14 +101,26 @@ def build(score: dict[str, Any], *, audio_tracks: Sequence[tuple[str, Path]] = (
                            "languageOverride": LANG.get(n.get("lang", ""), song_lang)},
             "takes": _takes(),
         })
-    vocal = _group("main", notes)
+    return out
+
+
+def build(score: dict[str, Any], *, audio_tracks: Sequence[tuple[str, Path]] = (), name: str = "Bapu",
+          harmony: bool = True) -> dict[str, Any]:
+    """`harmony`: add the harmony notes (score["harmony"]) as a second vocal track."""
+    bpm = float(score["tempo"]["bpm"])
+    num, den = (int(x) for x in str(score["tempo"].get("time_signature", "4/4")).split("/"))
+    song_lang = LANG.get(score.get("lang", ""), "")
+    vocal = _group("main", _sv_notes(score["notes"], bpm, song_lang))
     tracks = [_track(f"{name} vocal", 0, "ff7db235", vocal, _ref(vocal["uuid"], language=song_lang))]
+    if harmony and score.get("harmony"):
+        group = _group("main", _sv_notes(score["harmony"], bpm, song_lang))
+        tracks.append(_track(f"{name} 和声", 1, "ffd16ba5", group, _ref(group["uuid"], language=song_lang)))
     colors = ("ff15a5c6", "ffe0913c", "ff9b7bd8")
-    for i, (label, path) in enumerate(audio_tracks, 1):
+    for i, (label, path) in enumerate(audio_tracks):
         empty = _group("main", [])
         ref = _ref(empty["uuid"], instrumental=True)
         ref["audio"] = {"filename": str(Path(path).resolve()), "duration": float(sf.info(str(path)).duration)}
-        tracks.append(_track(f"{name} {label}", i, colors[(i - 1) % len(colors)], empty, ref))
+        tracks.append(_track(f"{name} {label}", len(tracks), colors[i % len(colors)], empty, ref))
     return {
         "version": 203, "uuid": _uuid(),
         "time": {"meter": [{"index": 0, "numerator": num, "denominator": den}],
@@ -127,9 +136,9 @@ def build(score: dict[str, Any], *, audio_tracks: Sequence[tuple[str, Path]] = (
 
 
 def write(score: dict[str, Any], path: Path, *, audio_tracks: Sequence[tuple[str, Path]] = (),
-          name: str = "Bapu") -> Path:
+          name: str = "Bapu", harmony: bool = True) -> Path:
     """`audio_tracks`: (label, file) pairs, each referenced by absolute path."""
-    project = build(score, audio_tracks=audio_tracks, name=name)
+    project = build(score, audio_tracks=audio_tracks, name=name, harmony=harmony)
     path.parent.mkdir(parents=True, exist_ok=True)
     # SV writes UTF-8 JSON followed by a NUL byte.
     path.write_bytes(json.dumps(project, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\x00")

@@ -53,6 +53,23 @@ def _s2hk():
     return OpenCC("s2hk")
 
 
+def pinyin_letters(chars: list[str]) -> list[str]:
+    """Mandarin: toneless pinyin per character, read in context (ü is `v`)."""
+    if not chars:
+        return []
+    from pypinyin import Style, lazy_pinyin
+
+    out = lazy_pinyin("".join(chars), style=Style.NORMAL, errors=lambda x: [""] * len(x))
+    if len(out) != len(chars):
+        out = [(lazy_pinyin(c, style=Style.NORMAL, errors="ignore") or [""])[0] for c in chars]
+    return [re.sub(r"[^a-z]", "", p.lower()) for p in out]
+
+
+def cjk_letters(chars: list[str], lang: str) -> list[str]:
+    """Letters for the aligner: Jyutping for Cantonese (`yue`), pinyin for Mandarin (`zh`)."""
+    return pinyin_letters(chars) if lang == "zh" else jyutping_letters(chars)
+
+
 def jyutping_letters(chars: list[str]) -> list[str]:
     """Letters (no tones) for each CJK character, read in context."""
     if not chars:

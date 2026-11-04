@@ -21,12 +21,9 @@ dependencies = [
     "soxr>=1.1",
     "numpy>=2.5",
     "scipy>=1.18",
-    # SOME (singing voice -> MIDI) inference deps; SOME itself lives in third_party/.
+    # MIDI export, the CLI, YAML corrections (SOME inference is ported into bapu.backends.some).
     "mido>=1.3.3",
     "click>=8.5",
-    "praat-parselmouth>=0.4.7",
-    "lightning>=2.6",
-    "einops>=0.8",
     "pyyaml>=6.0",
     # Lyrics -> phonemes for forced alignment.
     "tojyutping>=3.2",
@@ -35,6 +32,7 @@ dependencies = [
     "fastapi>=0.162",
     "uvicorn>=0.54",
     "python-multipart>=0.0.33",
+    "pypinyin>=0.55",
 ]
 
 [build-system]

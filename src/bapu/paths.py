@@ -23,7 +23,3 @@ def torch_home() -> Path:
     """TORCH_HOME for torchaudio pipelines such as MMS_FA."""
     return cache_dir() / "torch"
 
-
-def some_src_dir() -> Path:
-    """External checkout of openvpi/SOME (not committed)."""
-    return Path(os.environ.get("BAPU_SOME_SRC", "third_party/SOME")).resolve()

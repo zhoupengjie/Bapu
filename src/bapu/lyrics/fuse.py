@@ -42,6 +42,7 @@ class Tok:
     line: int
     time: float | None = None
     source: str = "ref"  # ref | dictation | both | user
+    lang: str = "yue"  # language of a Chinese token (yue | zh); Latin tokens are English
     optional: bool = False
     alt: "Tok | None" = None
     group: int | None = None  # words inserted together are kept or dropped together
@@ -52,23 +53,39 @@ class Tok:
         return g2p.is_latin(self.text)
 
 
-def keys_for(tokens: list[str]) -> list[str]:
+def keys_for(tokens: list[str], lang: str = "yue") -> list[str]:
+    """Sound keys: Jyutping (`yue`) or pinyin (`zh`) for Chinese, letters for English."""
     cjk = [t for t in tokens if not g2p.is_latin(t)]
-    jy = iter(g2p.jyutping_letters(cjk))
-    return [g2p.english_letters(t) if g2p.is_latin(t) else next(jy) for t in tokens]
+    rom = iter(g2p.cjk_letters(cjk, lang))
+    return [g2p.english_letters(t) if g2p.is_latin(t) else next(rom) for t in tokens]
 
 
-def dictation_tokens(phrases: list[dict[str, Any]], tokenize) -> list[Tok]:
+def dictation_tokens(phrases: list[dict[str, Any]], tokenize, lang_at=None) -> list[Tok]:
+    """Dictated tokens with an estimated time each. `lang_at(time)` gives the
+    Chinese language at that time (default Cantonese), so each token is keyed
+    like the reference line sung there."""
     out = []
     for p_no, p in enumerate(phrases, 1):
         toks = tokenize(p["text"])
-        for k, (t, key) in enumerate(zip(toks, keys_for(toks))):
-            when = p["t0"] + (k + 0.5) / max(len(toks), 1) * (p["t1"] - p["t0"])
-            out.append(Tok(t, key, p_no, round(when, 3), source="dictation"))
+        times = [round(p["t0"] + (k + 0.5) / max(len(toks), 1) * (p["t1"] - p["t0"]), 3) for k in range(len(toks))]
+        langs = [lang_at(t) if lang_at else "yue" for t in times]
+        # romanize runs of the same language together, so polyphones are read in context
+        keys: list[str] = []
+        k = 0
+        while k < len(toks):
+            j = k
+            while j < len(toks) and langs[j] == langs[k]:
+                j += 1
+            keys += keys_for(toks[k:j], langs[k])
+            k = j
+        for t, key, when, lang in zip(toks, keys, times, langs):
+            out.append(Tok(t, key, p_no, when, source="dictation", lang=lang))
     return out
 
 
-INITIALS = ("gw", "kw", "ng", "b", "p", "m", "f", "d", "t", "n", "l", "g", "k", "h", "z", "c", "s", "j", "w")
+# Jyutping and pinyin initials (keys of one comparison are always the same language).
+INITIALS = ("gw", "kw", "ng", "zh", "ch", "sh", "b", "p", "m", "f", "d", "t", "n", "l", "g", "k", "h", "z", "c", "s",
+            "j", "q", "x", "r", "y", "w")
 CLOSE = 0.75  # substitutions cheaper than this are near-homophones
 
 
@@ -183,7 +200,7 @@ def fuse(ref: list[Tok], dic: list[Tok], *, locked_lines: set[int] = frozenset()
                 gid = next(_GROUPS)
                 for t in Dg:
                     out.append(Tok(t.text, t.key, line, t.time, source="dictation", optional=True, flags=["added"],
-                                   group=gid))
+                                   group=gid, lang=t.lang))
                 events.append({"type": "insert", "line": line, "time": when, "count": len(Dg)})
             else:
                 events.append({"type": "extra_ignored", "line": line, "time": when, "count": len(Dg),
@@ -207,7 +224,7 @@ def fuse(ref: list[Tok], dic: list[Tok], *, locked_lines: set[int] = frozenset()
                            "reason": "english"})
         elif len(R) == len(Dg):
             for r, d in zip(R, Dg):
-                r.alt = Tok(d.text, d.key, r.line, d.time, source="dictation")
+                r.alt = Tok(d.text, d.key, r.line, d.time, source="dictation", lang=d.lang)
             events.append({"type": "alternatives", "line": line, "time": when, "count": len(R)})
         else:
             events.append({"type": "differs", "line": line, "time": when, "ref": len(R), "dictation": len(Dg),
@@ -222,7 +239,7 @@ def fuse(ref: list[Tok], dic: list[Tok], *, locked_lines: set[int] = frozenset()
                 if t.source == "ref":
                     t.source = "both"
             elif not t.latin and t.line not in locked_lines:
-                t.alt = Tok(dic[j].text, dic[j].key, t.line, dic[j].time, source="dictation")
+                t.alt = Tok(dic[j].text, dic[j].key, t.line, dic[j].time, source="dictation", lang=dic[j].lang)
                 events.append({"type": "alternatives", "line": t.line, "time": dic[j].time, "count": 1})
             out.append(t)
         else:

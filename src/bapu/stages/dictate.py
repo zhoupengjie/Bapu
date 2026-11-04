@@ -32,6 +32,23 @@ def phrases(notes: list[dict[str, Any]], rest: float, pad: float) -> list[tuple[
     return out
 
 
+def asr_language(langs: Any) -> str | None:
+    """The speech model's language for the selected `langs` (None = let it detect).
+
+    One Chinese language: force it (English words are still recognised). Both
+    Cantonese and Mandarin: detect per phrase. English only: English.
+    """
+    from bapu.stages.lyrics import check_langs
+
+    langs = check_langs(langs)
+    chinese = {x for x in langs if x in ("yue", "zh")}
+    if chinese == {"yue"}:
+        return "Cantonese"
+    if chinese == {"zh"}:
+        return "Chinese"
+    return None if chinese else "English"
+
+
 def _run(ctx: StageContext) -> StageResult:
     spec = ctx.models["model"]
     assert spec is not None
@@ -41,7 +58,7 @@ def _run(ctx: StageContext) -> StageResult:
 
     raw = ctx.out_dir / "asr_raw.json"
     args = ctx.out_dir / "asr_args.json"
-    lang = ctx.params.get("language") or None
+    lang = asr_language(ctx.params["langs"])
     args.write_text(json.dumps({"model_dir": str(model_dir), "wav": str(ctx.inputs["lead_dry"]),
                                 "segments": [[a, b] for a, b, _, _ in segs], "language": lang,
                                 "out_json": str(raw)}), encoding="utf-8")
@@ -85,10 +102,10 @@ STAGE = Stage(
     name="dictate",
     title="听写",
     index=6,
-    version="1",
+    version="2",
     inputs=("lead_dry", "merged_notes"),
     outputs=("dictation",),
-    defaults={"model": "qwen3-asr-1.7b", "rest": 0.3, "pad": 0.2, "language": "Cantonese"},
+    defaults={"model": "qwen3-asr-1.7b", "rest": 0.3, "pad": 0.2, "langs": ["yue", "en"]},
     model_params={"model": "dictate"},
     run=_run,
 )

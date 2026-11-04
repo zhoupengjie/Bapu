@@ -79,9 +79,10 @@ def audio_tracks(wd: WorkDir, spec: str) -> list[tuple[str, Path]]:
     return out
 
 
-def export(wd: WorkDir, formats: Sequence[str] = EXPORT_FORMATS, audio: str = "accompaniment,lead_dry"
-           ) -> list[tuple[str, Path]]:
-    """Write the requested formats to `<work dir>/export/`."""
+def export(wd: WorkDir, formats: Sequence[str] = EXPORT_FORMATS, audio: str = "accompaniment,lead_dry",
+           harmony: bool = True) -> list[tuple[str, Path]]:
+    """Write the requested formats to `<work dir>/export/`; `harmony` adds the
+    harmony line as a second vocal track (.svp) / MIDI track."""
     from bapu.export import midi, paste
     from bapu.export import svp as svp_export
 
@@ -97,10 +98,10 @@ def export(wd: WorkDir, formats: Sequence[str] = EXPORT_FORMATS, audio: str = "a
     written = []
     for f in formats:
         if f == "mid":
-            written.append((f, midi.write(score, dest / f"{name}.mid")))
+            written.append((f, midi.write(score, dest / f"{name}.mid", harmony=harmony)))
         elif f == "paste":
             written.append((f, paste.write(score, dest / f"{name}.paste.txt")))
         elif f == "svp":
             written.append((f, svp_export.write(score, dest / f"{name}.svp", audio_tracks=audio_tracks(wd, audio),
-                                               name=name)))
+                                               name=name, harmony=harmony)))
     return written

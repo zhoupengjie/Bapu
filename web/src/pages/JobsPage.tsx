@@ -29,6 +29,7 @@ function NewJob({ onCreated }: { onCreated: () => void }) {
   const [choice, setChoice] = useState<Record<string, string>>({}); // "stage.param" -> model id
   const [params, setParams] = useState<Record<string, string>>({}); // "stage.param" -> raw text
   const [adv, setAdv] = useState(false);
+  const [langs, setLangs] = useState<string[]>(["yue", "en"]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<{ message: string; missing?: string[] } | null>(null);
 
@@ -59,7 +60,7 @@ function NewJob({ onCreated }: { onCreated: () => void }) {
         if (lyricsPath.trim()) form.set("lyrics_path", lyricsPath.trim());
       }
       const job = await api.form<JobDetail>("/jobs", form);
-      const set: Record<string, Record<string, unknown>> = {};
+      const set: Record<string, Record<string, unknown>> = { lyrics: { langs }, dictate: { langs } };
       for (const [key, raw] of Object.entries(params)) {
         const [st, p] = key.split(".");
         (set[st] ??= {})[p] = parseValue(raw);
@@ -124,11 +125,21 @@ function NewJob({ onCreated }: { onCreated: () => void }) {
       )}
       <p className="muted small" style={{ margin: "-6px 0 0" }}>歌词只在本机处理；日志和报告里只出现句号、音符编号和时间。</p>
 
-      <div className="field">3 · 语言
-        <div className="seg">
-          <button type="button" className="on">粤语（含英文）</button>
-          <button type="button" disabled title="暂不支持">普通话</button>
+      <div className="field">3 · 歌里有哪些语言（可多选）
+        <div className="seg" role="group" aria-label="语言">
+          {([["yue", "粤语"], ["zh", "普通话"], ["en", "英语"]] as const).map(([id, label]) => {
+            const on = langs.includes(id);
+            return (
+              <button key={id} type="button" className={on ? "on" : ""} aria-pressed={on}
+                onClick={() => setLangs(on ? (langs.length > 1 ? langs.filter((x) => x !== id) : langs) : [...langs, id])}>
+                {on ? "✓ " : ""}{label}
+              </button>
+            );
+          })}
         </div>
+        <span className="muted small" style={{ fontWeight: 400 }}>
+          {langs.includes("yue") && langs.includes("zh") ? "粤语和普通话都选时，按听写模型对每个乐句的判断分别处理。" : "英文单词总是按英语处理。"}
+        </span>
       </div>
 
       <div className="field">

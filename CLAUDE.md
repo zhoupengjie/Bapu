@@ -16,7 +16,8 @@ it records the validated pipeline, parameters, measured results and pitfalls.
   Dictation output is lyric text: it stays in the gitignored work directory.
 - Never commit model weights, audio, lyrics, or generated projects. Weights live
   in `.cache/` (gitignored) and are downloaded on first use with their license
-  shown; `third_party/SOME` is an external checkout.
+  shown. SOME inference is ported into `src/bapu/backends/some/` (MIT, keep
+  its LICENSE); `third_party/SOME` is only used by `prototype/`.
 - Uncertain automatic decisions (merged notes, `-` sustain placement, low
   alignment confidence) must surface in the review report with times. User
   corrections must persist across reruns.

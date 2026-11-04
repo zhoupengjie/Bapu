@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from bapu.lyrics import g2p
 from bapu.lyrics.parse import parse_file, tokenize
 from bapu.lyrics.fuse import Tok, fuse, keys_for, prefer_exact, split_jyutping, sub_cost
@@ -105,3 +107,33 @@ def test_fuse_drops_stray_english_in_chinese_passage():
     out, _ = fuse(toks(["天", "空", "海", "洋"]), dict_toks(["天", "ok", "大", "海", "洋"]))
     assert [t.text for t in out if not t.optional] == ["天", "空", "海", "洋"]
     assert all(not t.latin for t in out)
+
+
+def test_pinyin_and_language_choice():
+    from bapu.lyrics.fuse import dictation_tokens
+    from bapu.lyrics.parse import tokenize
+    from bapu.stages.dictate import asr_language
+    from bapu.stages.lyrics import check_langs, chinese_of
+
+    assert g2p.pinyin_letters(["你", "好", "绿"]) == ["ni", "hao", "lv"]
+    assert g2p.cjk_letters(["你"], "zh") == ["ni"] and g2p.cjk_letters(["你"], "yue") == ["nei"]
+    assert check_langs("yue, en") == ["yue", "en"]
+    with pytest.raises(ValueError):
+        check_langs(["fr"])
+    assert chinese_of(["en"]) == ["yue"] and chinese_of(["zh", "yue"]) == ["zh", "yue"]
+    assert asr_language(["yue", "en"]) == "Cantonese"
+    assert asr_language(["zh"]) == "Chinese"
+    assert asr_language(["yue", "zh", "en"]) is None
+    assert asr_language(["en"]) == "English"
+    # Dictated tokens take the language of the line sung at their time.
+    phrases = [{"t0": 0.0, "t1": 2.0, "text": "你好"}, {"t0": 3.0, "t1": 5.0, "text": "你好"}]
+    toks = dictation_tokens(phrases, tokenize, lambda t: "zh" if t > 2.5 else "yue")
+    assert [(x.key, x.lang) for x in toks] == [("nei", "yue"), ("hou", "yue"), ("ni", "zh"), ("hao", "zh")]
+
+
+def test_fuse_in_mandarin_uses_pinyin():
+    ref = [Tok(w, k, 1, lang="zh") for w, k in zip(["天", "海"], keys_for(["天", "海"], "zh"))]
+    dic = [Tok(w, k, 1, time=float(i), source="dictation", lang="zh")
+           for i, (w, k) in enumerate(zip(["天", "大", "海"], keys_for(["天", "大", "海"], "zh")))]
+    out, _ = fuse(ref, dic)
+    assert [t.text for t in out] == ["天", "大", "海"] and out[1].optional and out[1].lang == "zh"

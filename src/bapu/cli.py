@@ -13,6 +13,7 @@ import yaml
 from bapu import compare, jobs, pipeline, report
 from bapu import corrections as corr_mod
 from bapu.corrections import CorrectionsError
+from bapu.stages.lyrics import check_langs
 from bapu.models.registry import LicenseNotAccepted, ModelSpec, Registry, RegistryError
 from bapu.progress import PrintProgress
 from bapu.workdir import WorkDir
@@ -108,7 +109,7 @@ def main() -> None:
 @click.option("--accept-licenses", is_flag=True, help="缺模型时不逐个询问，直接接受许可证并下载")
 @click.option("--lyrics", type=click.Path(exists=True, dir_okay=False, path_type=Path),
               help="参考歌词（.ass / .lrc / .txt），用来校正听写的用字；不给时沿用上次的")
-@click.option("--lang", help="歌词语言（目前支持 yue）")
+@click.option("--lang", help="歌曲里的语言，可多选，逗号分隔：yue（粤语）、zh（普通话）、en（英语）；默认 yue,en")
 def run(audio: Path, out: Path | None, from_stage: str | None, until: str | None,
         sets: tuple[str, ...], models: tuple[str, ...], accept_licenses: bool,
         lyrics: Path | None, lang: str | None) -> None:
@@ -120,7 +121,13 @@ def run(audio: Path, out: Path | None, from_stage: str | None, until: str | None
     if lyrics:
         sources["lyrics"] = lyrics
     try:
-        extra = {"lyrics": {"lang": lang}} if lang else {}
+        extra: dict[str, dict[str, Any]] = {}
+        if lang:
+            try:
+                langs = check_langs(lang)
+            except ValueError as e:
+                raise click.BadParameter(str(e)) from None
+            extra = {"lyrics": {"langs": langs}, "dictate": {"langs": langs}}
         overrides = jobs.merge(wd.load_params(), _parse_sets(sets), _parse_models(models), extra)
         # Check every model the run will need before starting, so a missing one
         # is downloaded (after its license is accepted) instead of failing mid-way.
@@ -163,13 +170,14 @@ def status(out: Path) -> None:
 @click.option("--format", "formats", default="mid,svp,paste", show_default=True, help="mid / svp / paste，逗号分隔")
 @click.option("--audio", "audio", default="accompaniment,lead_dry", show_default=True,
               help=".svp 里加哪些音频轨：accompaniment / lead_dry / none，逗号分隔")
-def export(out: Path, formats: str, audio: str) -> None:
+@click.option("--no-harmony", is_flag=True, help="不导出和声轨")
+def export(out: Path, formats: str, audio: str, no_harmony: bool) -> None:
     """把 score.json 导出到 <工作目录>/export/。"""
     import json
 
     wd = WorkDir(out)
     try:
-        written = jobs.export(wd, [f.strip() for f in formats.split(",") if f.strip()], audio)
+        written = jobs.export(wd, [f.strip() for f in formats.split(",") if f.strip()], audio, not no_harmony)
     except jobs.JobError as e:
         raise click.ClickException(str(e)) from None
     for f, p in written:
@@ -273,6 +281,34 @@ def models_list(stage: str | None) -> None:
         st = registry.status(spec)
         flag = "已验证" if spec.verified else "实验"
         click.echo(f"{spec.id:<30} {spec.stage:<14} {label[st]:<6} {_fmt_size(spec.total_size):>8}  {flag}  {spec.license.name}")
+
+
+@models.command("info")
+@click.argument("model_id")
+def models_info(model_id: str) -> None:
+    """手动下载用：下载地址、放到哪个目录、文件名和 SHA-256。"""
+    registry = Registry.load()
+    try:
+        spec = registry.get(model_id)
+    except RegistryError as e:
+        raise click.ClickException(str(e)) from None
+    _show_license(spec)
+    info = registry.download_info(spec)
+    if info["dir"] is None:
+        click.echo("\n随程序安装，不需要下载。")
+        return
+    click.echo(f"\n放到目录：{info['dir']}")
+    if info["archive"]:
+        a = info["archive"]
+        click.echo(f"下载压缩包：{a['url']}（{_fmt_size(a['size'])}）")
+        click.echo("解压后，把下面的文件放进上面的目录（在压缩包里按文件名找）：")
+    for f in info["files"]:
+        mark = "已在" if f["present"] else "缺少"
+        click.echo(f"\n  [{mark}] {f['name']}  {_fmt_size(f['size'])}")
+        click.echo(f"    SHA-256：{f['sha256']}")
+        for url in f["urls"]:
+            click.echo(f"    下载：{url}")
+    click.echo(f"\n放好后运行 `bapu models list` 检查，状态应为“已下载”。")
 
 
 @models.command("pull")

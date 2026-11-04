@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { Kind, ScoreLine, ScoreNote } from "../api";
+import type { HarmonyNote, Kind, ScoreLine, ScoreNote } from "../api";
 
 const NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 export const pitchName = (p: number) => `${NAMES[((p % 12) + 12) % 12]}${Math.floor(p / 12) - 1}`;
@@ -16,13 +16,15 @@ type Props = {
   onSelect: (index: number) => void;
   onSeek: (t: number) => void;
   height?: number;
+  harmony?: HarmonyNote[]; // drawn as outlines behind the lead
+  selectedHarmony?: number | null;
 };
 
 function cssVar(el: Element, name: string) {
   return getComputedStyle(el).getPropertyValue(name).trim();
 }
 
-export default function PianoRoll({ notes, lines, t0, span, playhead, selected, kindOverride, cuts, onSelect, onSeek, height = 340 }: Props) {
+export default function PianoRoll({ notes, lines, t0, span, playhead, selected, kindOverride, cuts, onSelect, onSeek, height = 340, harmony = [], selectedHarmony = null }: Props) {
   const wrap = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const [width, setWidth] = useState(800);
@@ -39,7 +41,8 @@ export default function PianoRoll({ notes, lines, t0, span, playhead, selected, 
 
   const t1 = t0 + span;
   const visible = notes.filter((n) => n.start + n.dur >= t0 && n.start <= t1);
-  const ps = visible.length ? visible.map((n) => n.pitch) : [60, 72];
+  const visibleH = harmony.filter((n) => n.start + n.dur >= t0 && n.start <= t1);
+  const ps = visible.length || visibleH.length ? [...visible, ...visibleH].map((n) => n.pitch) : [60, 72];
   const pMax = Math.max(...ps) + 2;
   const pMin = Math.min(...ps) - 2;
   const rows = pMax - pMin + 1;
@@ -78,6 +81,24 @@ export default function PianoRoll({ notes, lines, t0, span, playhead, selected, 
       }
       g.fillStyle = ln.attention ? v("--warn") : v("--muted");
       g.fillText(`L${String(ln.line).padStart(2, "0")}${ln.version === "manual" ? " 人工" : ""}`, Math.max(KEYS + 2, x(a) + 3), 15);
+    }
+    // harmony: outlined boxes with their own syllables
+    for (const n of visibleH) {
+      const nx = x(n.start), nw = Math.max(2, x(n.start + n.dur) - nx - 1);
+      const ny = y(n.pitch) + 1, nh = Math.max(4, rowH - 2);
+      g.fillStyle = "rgba(209, 107, 165, 0.18)";
+      g.fillRect(nx, ny, nw, nh);
+      g.strokeStyle = n.flags.some((f) => f === "alone" || f === "octave" || f === "late_onset") ? "#c2410c" : "#d16ba5";
+      g.lineWidth = n.index === selectedHarmony ? 2.5 : 1.2;
+      g.strokeRect(nx + 0.5, ny + 0.5, nw - 1, nh - 1);
+      g.fillStyle = v("--ink");
+      g.font = `${Math.min(12, nh - 3)}px system-ui, sans-serif`;
+      g.save();
+      g.beginPath();
+      g.rect(nx, ny, nw, nh);
+      g.clip();
+      g.fillText(n.lyric, nx + 3, ny + nh * 0.75);
+      g.restore();
     }
     // notes
     const fill: Record<Kind, string> = { word: v("--word"), sustain: v("--sustain"), cont: v("--cont") };
@@ -128,7 +149,7 @@ export default function PianoRoll({ notes, lines, t0, span, playhead, selected, 
       g.fillStyle = "#c2410c";
       g.fillRect(x(playhead) - 1, 0, 2, height);
     }
-  }, [notes, lines, t0, span, playhead, selected, kindOverride, cuts, width, height, pMin, pMax, rowH]);
+  }, [notes, lines, t0, span, playhead, selected, kindOverride, cuts, width, height, pMin, pMax, rowH, harmony, selectedHarmony]);
 
   function onClick(e: React.MouseEvent<HTMLCanvasElement>) {
     const r = e.currentTarget.getBoundingClientRect();

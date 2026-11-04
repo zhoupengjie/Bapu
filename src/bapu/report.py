@@ -44,6 +44,8 @@ def finalize(wd: WorkDir) -> dict[str, Any] | None:
         f"{st.name}.{p}": manifest["stages"].get(st.name, {}).get("params", {}).get(p)
         for st in STAGES for p in st.model_params
     }
+    harmony = _read(wd, "harmony", "harmony.json")
+    score["harmony"] = harmony["notes"] if harmony else []
     write_json_atomic(wd.root / "score.json", score)
 
     review = build_review(wd, score)
@@ -140,6 +142,13 @@ def build_review(wd: WorkDir, score: dict[str, Any]) -> dict[str, Any]:
             dictation.append({"kind": e["type"], "line": e["line"], "time": e.get("time"), "conf": None,
                               "status": f"听写和参考不一致，保留参考（{why}）", "attention": e.get("reason") == "length"})
     dictation.sort(key=lambda x: (x["line"], x["time"] or 0))
+
+    why = {"alone": "和声单独唱，歌词是占位的", "octave": "和主唱差一个八度以上，可能转错八度",
+           "late_onset": "起音和主唱的字对不上", "partial_word": "从字的中间开始，补写了整个字"}
+    harmony = [{"time": n["start"], "note": n["index"], "line": n["line"],
+                "status": "；".join(why[f] for f in n["flags"] if f in why),
+                "attention": any(f in ("alone", "octave", "late_onset") for f in n["flags"])}
+               for n in score.get("harmony", []) if n["flags"]]
     if mode == "dictation_only":
         for ln in lines:
             ln["attention"] = True
@@ -147,7 +156,7 @@ def build_review(wd: WorkDir, score: dict[str, Any]) -> dict[str, Any]:
 
     attention = (sum(m["attention"] for m in merges) + sum(s["attention"] for s in sustains)
                  + sum(ln["attention"] for ln in lines) + len(stale) + len(conflict_ids)
-                 + sum(d["attention"] for d in dictation))
+                 + sum(d["attention"] for d in dictation) + sum(h["attention"] for h in harmony))
     return {
         "format": "bapu.review/1",
         "summary": {
@@ -161,8 +170,11 @@ def build_review(wd: WorkDir, score: dict[str, Any]) -> dict[str, Any]:
             "corrections": len(entries),
             "lyrics_mode": mode,
             "dictation_changes": sum(d["attention"] for d in dictation),
+            "harmony_notes": len(score.get("harmony", [])),
+            "harmony_attention": sum(h["attention"] for h in harmony),
         },
         "dictation": dictation,
+        "harmony": harmony,
         "merges": merges,
         "sustains": sustains,
         "lines": lines,
@@ -187,6 +199,12 @@ def render_md(r: dict[str, Any]) -> str:
                        else f"听写 + 参考歌词；听写改动了 {s['dictation_changes']} 处"),
         "",
     ]
+    if r.get("harmony"):
+        out += ["## 和声", "", f"和声音符 {s['harmony_notes']} 个，下面列出需要看的。", "",
+                "| 时间 | 和声音符 | 句 | 原因 |", "|---|---|---|---|"]
+        for h in r["harmony"]:
+            out.append(f"| {mmss(h['time'])} | {h['note']} | L{h['line']:02d} | {'⚠ ' if h['attention'] else ''}{h['status']} |")
+        out.append("")
     if r["dictation"]:
         out += ["## 听写和参考歌词", "", "| 时间 | 句 | 置信度 | 结果 |", "|---|---|---|---|"]
         for d in r["dictation"]:

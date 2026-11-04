@@ -289,6 +289,21 @@ class Registry:
                 shutil.move(str(found[0]), dest_dir / f.name)
         part.unlink(missing_ok=True)
 
+    def download_info(self, spec: ModelSpec) -> dict:
+        """Everything needed to fetch a model by hand: where each file comes
+        from, where it must go, and the checksum it must match."""
+        folder = self.model_dir(spec).resolve() if spec.needs_files else None
+        files = []
+        for f in spec.files:
+            path = folder / f.name if folder else None
+            files.append({"name": f.name, "size": f.size, "sha256": f.sha256, "urls": list(f.urls),
+                          "path": str(path) if path else None, "present": bool(path and path.exists())})
+        info = {"dir": str(folder) if folder else None, "files": files, "archive": None}
+        if spec.archive is not None:
+            info["archive"] = {"url": spec.archive.url, "size": spec.archive.size,
+                               "name": spec.archive.url.rsplit("/", 1)[-1]}
+        return info
+
     def remove(self, spec: ModelSpec) -> int:
         """Delete the model's files; returns bytes freed."""
         freed = 0

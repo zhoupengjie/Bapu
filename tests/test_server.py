@@ -213,3 +213,22 @@ def test_audio_supports_range(env):
         r = client.get(f"/api/jobs/{job['id']}/audio/source", headers={"Range": "bytes=0-9"})
         assert r.status_code == 206 and r.content == b"fictional-"
         assert client.get(f"/api/jobs/{job['id']}/audio/lead_dry").status_code == 404
+
+
+def test_models_carry_manual_download_info(env):
+    svc, _ = env()
+    with TestClient(create_app(svc)) as client:
+        net = next(m for m in client.get("/api/models").json() if m["id"] == "net")
+        d = net["download"]
+        assert d["dir"].endswith(str(Path("models") / "net"))
+        assert [f["name"] for f in d["files"]] == ["w.bin"]
+        f = d["files"][0]
+        assert f["urls"][0].startswith("file:") and len(f["sha256"]) == 64 and f["present"] is False
+        assert f["path"] == str(Path(d["dir"]) / "w.bin")
+        # A file placed by hand at that path is picked up by the next listing.
+        Path(d["dir"]).mkdir(parents=True)
+        (svc.root.parent / "upstream.bin").replace(f["path"])
+        net = next(m for m in client.get("/api/models").json() if m["id"] == "net")
+        assert net["status"] == "ready" and net["download"]["files"][0]["present"]
+        algo = next(m for m in client.get("/api/models").json() if m["id"] == "algo")
+        assert algo["download"]["dir"] is None

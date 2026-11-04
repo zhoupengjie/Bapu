@@ -15,6 +15,7 @@ export default function ExportPage({ id }: { id: string }) {
   const [job, setJob] = useState<JobDetail | null>(null);
   const [formats, setFormats] = useState<Record<string, boolean>>({ svp: true, mid: true, paste: false });
   const [tracks, setTracks] = useState<Record<string, boolean>>({ accompaniment: true, lead_dry: true });
+  const [harmony, setHarmony] = useState(true);
   const [files, setFiles] = useState<{ format: string; name: string; size: number }[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -31,7 +32,7 @@ export default function ExportPage({ id }: { id: string }) {
     try {
       const audio = Object.entries(tracks).filter(([, on]) => on).map(([k]) => k).join(",") || "none";
       const r = await api.post<{ files: typeof files }>(`/jobs/${enc}/export`, {
-        formats: Object.entries(formats).filter(([, on]) => on).map(([k]) => k), audio,
+        formats: Object.entries(formats).filter(([, on]) => on).map(([k]) => k), audio, harmony,
       });
       setFiles(r.files);
     } catch (e) {
@@ -78,6 +79,10 @@ export default function ExportPage({ id }: { id: string }) {
               )}
             </div>
           ))}
+          <label style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <input type="checkbox" checked={harmony} onChange={() => setHarmony(!harmony)} />
+            <span>包含和声轨（.svp 里第二条人声轨，MIDI 第 2 轨）</span>
+          </label>
           <div className="row" style={{ gap: 12, alignItems: "center" }}>
             <button type="button" className="btn primary" disabled={busy || !job?.has_score || !Object.values(formats).some(Boolean)} onClick={exportNow}>
               {busy ? "生成中…" : "生成"}

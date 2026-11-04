@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
+import { Fragment } from "react";
 import { api, follow, fmtSize, type Model, type StageInfo } from "../api";
+import DownloadInfo from "../components/DownloadInfo";
 
 const COMMERCIAL = { yes: "允许", no: "不允许", unknown: "未知，请自行确认" };
 
@@ -10,6 +12,7 @@ export default function ModelsPage() {
   const [agree, setAgree] = useState(false);
   const [progress, setProgress] = useState<Record<string, { done: number; total: number | null; file: string }>>({});
   const [error, setError] = useState<string | null>(null);
+  const [open, setOpen] = useState<Record<string, boolean>>({});
 
   const load = useCallback(() => api.get<Model[]>("/models").then(setModels).catch((e) => setError(e.message)), []);
   useEffect(() => {
@@ -61,7 +64,8 @@ export default function ModelsPage() {
       <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-end" }}>
         <div>
           <h1 style={{ margin: 0, fontSize: 22 }}>模型</h1>
-          <p className="muted small" style={{ margin: "4px 0 0" }}>只列出注册表里的模型：固定的下载地址和 SHA-256，下载前先看许可证。权重不进代码仓库。</p>
+          <p className="muted small" style={{ margin: "4px 0 0" }}>只列出注册表里的模型：固定的下载地址和 SHA-256，下载前先看许可证。权重不进代码仓库。
+            可以在这里一键下载，也可以展开“下载地址”自己下载后放进指定目录。</p>
         </div>
         <span className="small">已下载 {models.filter((m) => m.status === "ready").length} 个 · 约 <span className="mono">{fmtSize(used)}</span></span>
       </div>
@@ -74,7 +78,8 @@ export default function ModelsPage() {
               {list.map((m) => {
                 const p = progress[m.id];
                 return (
-                  <tr key={m.id}>
+                  <Fragment key={m.id}>
+                  <tr>
                     <td style={{ minWidth: 240 }}>
                       <b style={{ fontWeight: 500 }}>{m.name}</b>{" "}
                       <span className={`badge ${m.verified ? "ok" : "warn"}`}>{m.verified ? "已验证" : "实验"}</span>
@@ -100,8 +105,18 @@ export default function ModelsPage() {
                           {m.status === "corrupt" ? "校验失败，重新下载" : "看许可证并下载"}
                         </button>
                       ))}
+                      {m.status !== "builtin" && (
+                        <div><button type="button" className="link" aria-expanded={!!open[m.id]}
+                          onClick={() => setOpen({ ...open, [m.id]: !open[m.id] })}>
+                          {open[m.id] ? "▾" : "▸"} 下载地址 / 手动下载
+                        </button></div>
+                      )}
                     </td>
                   </tr>
+                  {open[m.id] && (
+                    <tr><td colSpan={4} style={{ borderTop: 0, paddingTop: 0 }}><DownloadInfo model={m} onRecheck={load} /></td></tr>
+                  )}
+                  </Fragment>
                 );
               })}
             </tbody>

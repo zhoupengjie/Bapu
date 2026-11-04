@@ -8,7 +8,7 @@ type Item = { id: string; cat: string; time: number; line: number | null; note?:
 type Pending = { key: string; entry: Record<string, unknown>; label: string };
 
 const CATS: Record<string, string> = {
-  dictation: "听写", merge: "合并", line: "句子", sustain: "- 位置", correction: "修正",
+  dictation: "听写", merge: "合并", line: "句子", sustain: "- 位置", harmony: "和声", correction: "修正",
 };
 
 function buildItems(r: Review): Item[] {
@@ -20,6 +20,7 @@ function buildItems(r: Review): Item[] {
     items.push({ id: `l${l.line}`, cat: "line", time: l.t0 ?? l.start ?? 0, line: l.line, note: l.first_note, text: `${why} · 置信度 ${l.conf?.toFixed(2) ?? "—"}`, attention: true });
   });
   r.sustains.filter((s) => s.attention).forEach((s, k) => items.push({ id: `s${k}`, cat: "sustain", time: s.time, line: s.line, note: s.note, text: `${s.after_rest ? "休止后" : "起音明显"} · 起音 ${s.onset?.toFixed(2) ?? "—"}`, attention: true }));
+  (r.harmony ?? []).forEach((h, k) => items.push({ id: `h${k}`, cat: "harmony", time: h.time, line: h.line, text: `和声 #${h.note} · ${h.status}`, attention: h.attention }));
   r.stale_corrections.forEach((c) => items.push({ id: `c${c.id}`, cat: "correction", time: c.at ?? 0, line: c.line, text: `第 ${c.id} 条修正失效（${c.type}）`, attention: true }));
   r.conflicting_corrections.forEach((c) => items.push({ id: `x${c.id}`, cat: "correction", time: 0, line: c.line, text: `第 ${c.id} 条修正冲突：${c.reason}`, attention: true }));
   return items.sort((a, b) => a.time - b.time);
@@ -40,6 +41,8 @@ export default function ReviewPage({ id }: { id: string }) {
   const [filter, setFilter] = useState<string>("attention");
   const [itemId, setItemId] = useState<string | null>(null);
   const [pending, setPending] = useState<Pending[]>([]);
+  const [showHarmony, setShowHarmony] = useState(true);
+  const [harmonySel, setHarmonySel] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   const waveEl = useRef<HTMLDivElement>(null);
   const ws = useRef<WaveSurfer | null>(null);
@@ -104,6 +107,7 @@ export default function ReviewPage({ id }: { id: string }) {
 
   function pickItem(it: Item) {
     setItemId(it.id);
+    setHarmonySel(it.cat === "harmony" ? Number(it.text.match(/#(\d+)/)?.[1]) : null);
     const n = it.note != null ? notesByIndex.get(it.note) : score?.notes.find((x) => x.start >= it.time - 0.05);
     if (n) setSelected(n.index);
     focus(it.time);
@@ -136,6 +140,8 @@ export default function ReviewPage({ id }: { id: string }) {
     }
   }
 
+  // a line's Chinese language: the language of its Chinese notes (English words are always English)
+  const lineLang = (line: number) => score?.notes.find((n) => n.line === line && n.lang !== "en")?.lang ?? "en";
   const noteMerges = sel ? review?.merges.filter((m) => m.note === sel.index) ?? [] : [];
   const lineNotes = sel ? score?.notes.filter((n) => n.line === sel.line) ?? [] : [];
 
@@ -182,6 +188,12 @@ export default function ReviewPage({ id }: { id: string }) {
                 <span><i style={{ background: "var(--cont)" }} />+ 连音</span>
                 <span>虚线 = 合并前的切口</span>
               </span>
+              {!!score?.harmony?.length && (
+                <label className="small" style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <input type="checkbox" checked={showHarmony} onChange={() => setShowHarmony(!showHarmony)} />
+                  显示和声（粉色框，{score.harmony.length} 个）
+                </label>
+              )}
               <span className="seg">
                 <button type="button" onClick={() => setT0(Math.max(0, t0 - span * 0.8))}>◀</button>
                 <button type="button" onClick={() => setT0(t0 + span * 0.8)}>▶</button>
@@ -189,7 +201,7 @@ export default function ReviewPage({ id }: { id: string }) {
             </div>
             {score && (
               <PianoRoll notes={score.notes} lines={reviewLines} t0={t0} span={span} playhead={time} selected={selected}
-                kindOverride={kindOverride} cuts={cuts} onSelect={(i) => { setSelected(i); seek(notesByIndex.get(i)!.start); }} onSeek={seek} />
+                kindOverride={kindOverride} cuts={cuts} harmony={showHarmony ? score.harmony ?? [] : []} selectedHarmony={harmonySel} onSelect={(i) => { setSelected(i); seek(notesByIndex.get(i)!.start); }} onSeek={seek} />
             )}
           </section>
 
@@ -216,6 +228,20 @@ export default function ReviewPage({ id }: { id: string }) {
                       {KIND_LABEL[k]}
                     </button>
                   ))}
+                </div>
+              </div>
+              <div className="field">这一句（L{String(sel.line).padStart(2, "0")}）的语言
+                <div className="seg">
+                  {([["yue", "粤语"], ["zh", "普通话"], ["en", "英语"]] as const).map(([id, label]) => {
+                    const pendingLang = pending.find((p) => p.key === `lang${sel.line}`)?.entry.lang;
+                    const current = (pendingLang as string | undefined) ?? (sel.lang === "en" ? lineLang(sel.line) : sel.lang);
+                    return (
+                      <button key={id} type="button" className={current === id ? "on" : ""}
+                        onClick={() => addPending({ key: `lang${sel.line}`, entry: { type: "line_lang", line: sel.line, lang: id }, label: `L${String(sel.line).padStart(2, "0")} 改成${label}` })}>
+                        {label}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
               <div className="row" style={{ gap: 10 }}>

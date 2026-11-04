@@ -33,12 +33,14 @@ uv run bapu models list                     # 注册表里的模型、下载状�
 uv run bapu models pull <模型ID>             # 先显示许可证，确认后下载并校验 SHA-256
 uv run bapu run "<歌曲>.wav" --lyrics "<字幕>.ass"   # 听写 + 参考歌词；输出到 work/<文件名>/，没变的步骤用缓存
 uv run bapu run "<歌曲>.wav"                       # 没有参考歌词时全部来自听写（每句都要确认）
+uv run bapu run "<歌曲>.wav" --lang yue,zh,en       # 歌里的语言，可多选（默认 yue,en）
+uv run bapu models info <模型ID>             # 手动下载：地址、目录、文件名、SHA-256
 uv run bapu run "<歌曲>.wav" --set assign.gap_pen=0.4   # 改参数只重跑这一步和之后的步骤
 uv run bapu run "<歌曲>.wav" --model lead.dereverb_model=none
 uv run bapu status work/<文件名>
 uv run bapu corrections from-svp work/<文件名> "<工程>.svp"   # 把在 SV 里改过的地方读成修正
 uv run bapu eval work/<文件名> "<工程>.svp" --lines 2,10      # 自动版本和 SV 里的版本逐句对比
-uv run bapu export work/<文件名>                # 导出 MIDI（带歌词）、.svp 工程、粘贴文件到 export/
+uv run bapu export work/<文件名>                # 导出 MIDI（带歌词，含和声轨）、.svp 工程（人声 + 和声 + 伴奏 + 主唱干声）、粘贴文件
 uv run bapu serve                            # 本机网页界面 + API：http://127.0.0.1:8765/
 uv run pytest                                # 单元测试（只用虚构数据）
 ```
@@ -50,8 +52,8 @@ uv run pytest                                # 单元测试（只用虚构数据
 - 修正写在工作目录的 `corrections.yaml`，按时间定位，重跑不会覆盖；格式见 `src/bapu/corrections.py`。
 - 整首歌回归测试：设置 `BAPU_REGRESSION_AUDIO` 和 `BAPU_REGRESSION_LYRICS` 后运行 `uv run pytest -m regression`。
 
-模型权重不随项目分发，各自有不同的许可（见笔记的“许可”一节）。本地缓存放在 `.cache/`，
-SOME 的代码放在 `third_party/SOME`，两者都不提交到仓库。
+模型权重不随项目分发，各自有不同的许可（见笔记的“许可”一节），第一次用到时下载到 `.cache/`，不提交到仓库。
+SOME 的推理代码已移植进 `src/bapu/backends/some/`（MIT，保留了原作者的版权声明），不需要另外检出。
 
 ## 原则
 

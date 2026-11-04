@@ -43,6 +43,7 @@ class CorrectionsBody(BaseModel):
 class ExportBody(BaseModel):
     formats: list[str] = list(jobs.EXPORT_FORMATS)
     audio: str = "accompaniment,lead_dry"
+    harmony: bool = True
 
 
 class PullBody(BaseModel):
@@ -209,7 +210,7 @@ def create_app(service: JobService, static_dir: Path | None = None) -> FastAPI:
     def export(job_id: str, body: ExportBody) -> dict[str, Any]:
         wd = service.workdir(job_id)
         try:
-            written = jobs.export(wd, body.formats, body.audio)
+            written = jobs.export(wd, body.formats, body.audio, body.harmony)
         except jobs.JobError as e:
             raise ServiceError(str(e)) from None
         return {"files": [{"format": f, "name": p.name, "size": p.stat().st_size} for f, p in written]}

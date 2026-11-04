@@ -50,6 +50,11 @@ export type Model = {
   license: License;
   license_accepted: boolean;
   downloading: boolean;
+  download: {
+    dir: string | null;
+    files: { name: string; size: number | null; sha256: string; urls: string[]; path: string | null; present: boolean }[];
+    archive: { url: string; size: number | null; name: string } | null;
+  };
 };
 
 export type SystemInfo = {
@@ -93,11 +98,17 @@ export type ScoreLine = {
   last_note: number | null;
 };
 
+export type HarmonyNote = {
+  index: number; start: number; dur: number; pitch: number; cents: number; kind: Kind; lyric: string;
+  lang: string; line: number; interval: number | null; level_db: number | null; flags: string[];
+};
+
 export type Score = {
   tempo: { bpm: number; time_signature: string; source: string; confidence: string };
   lang: string;
   lines: ScoreLine[];
   notes: ScoreNote[];
+  harmony?: HarmonyNote[];
 };
 
 export type ReviewLine = ScoreLine & {
@@ -111,6 +122,7 @@ export type ReviewLine = ScoreLine & {
 export type Review = {
   summary: Record<string, number | string | boolean>;
   dictation: { kind: string; line: number; time: number | null; conf: number | null; status: string; attention: boolean }[];
+  harmony?: { time: number; note: number; line: number; status: string; attention: boolean }[];
   merges: { time: number; note: number | null; line: number | null; score: number; status: string; attention: boolean }[];
   sustains: { time: number; note: number; line: number; onset: number | null; after_rest: boolean; fixed: boolean; attention: boolean }[];
   lines: ReviewLine[];
