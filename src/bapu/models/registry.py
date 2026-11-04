@@ -13,6 +13,7 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import time
 import tomllib
 import urllib.error
@@ -118,6 +119,8 @@ def _parse(raw: dict) -> ModelSpec:
 class Registry:
     models: dict[str, ModelSpec]
     cache_root: Path = field(default_factory=paths.cache_dir)
+    # state.json is shared by API requests and download threads
+    _lock: threading.RLock = field(default_factory=threading.RLock, repr=False, compare=False)
 
     # -- loading ------------------------------------------------------------
     @classmethod
@@ -157,18 +160,20 @@ class Registry:
         return {"accepted": {}, "verified": {}}
 
     def _save_state(self, state: dict) -> None:
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.state_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, self.state_path)
+        with self._lock:
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.state_path.with_suffix(f".{threading.get_ident()}.tmp")
+            tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(tmp, self.state_path)
 
     def license_accepted(self, spec: ModelSpec) -> bool:
         return spec.id in self._state()["accepted"]
 
     def accept_license(self, spec: ModelSpec) -> None:
-        state = self._state()
-        state["accepted"][spec.id] = {"license": spec.license.name, "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
-        self._save_state(state)
+        with self._lock:
+            state = self._state()
+            state["accepted"][spec.id] = {"license": spec.license.name, "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+            self._save_state(state)
 
     # -- verification ---------------------------------------------------------
     def _file_ok(self, path: Path, f: FileSpec, state: dict) -> bool | None:
@@ -190,9 +195,12 @@ class Registry:
     def status(self, spec: ModelSpec) -> Status:
         if not spec.needs_files:
             return "builtin"
-        state = self._state()
-        results = [self._file_ok(self.model_dir(spec) / f.name, f, state) for f in spec.files]
-        self._save_state(state)
+        with self._lock:
+            state = self._state()
+            before = json.dumps(state["verified"], sort_keys=True)
+            results = [self._file_ok(self.model_dir(spec) / f.name, f, state) for f in spec.files]
+            if json.dumps(state["verified"], sort_keys=True) != before:
+                self._save_state(state)
         if any(r is False for r in results):
             return "corrupt"
         if any(r is None for r in results):

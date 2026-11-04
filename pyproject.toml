@@ -32,6 +32,9 @@ dependencies = [
     "tojyutping>=3.2",
     "opencc-python-reimplemented>=0.1.7",
     "qwen-asr>=0.0.6",
+    "fastapi>=0.162",
+    "uvicorn>=0.54",
+    "python-multipart>=0.0.33",
 ]
 
 [build-system]
@@ -60,6 +63,7 @@ torchvision = { index = "pytorch-cu128" }
 
 [dependency-groups]
 dev = [
+    "httpx>=0.28",
     "pytest>=9.2.0",
 ]
 

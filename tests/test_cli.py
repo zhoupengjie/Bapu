@@ -4,13 +4,13 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from bapu import cli
+from bapu import cli, jobs
 
 
 def test_slug():
-    assert cli._slug("My Jealousy") == "my-jealousy"
-    assert cli._slug("  示例 歌曲_A ") == "示例-歌曲-a"
-    assert cli._slug("???") == "song"
+    assert jobs.slug("My Jealousy") == "my-jealousy"
+    assert jobs.slug("  示例 歌曲_A ") == "示例-歌曲-a"
+    assert jobs.slug("???") == "song"
 
 
 def test_parse_sets_and_models():
@@ -18,7 +18,7 @@ def test_parse_sets_and_models():
     assert sets == {"tempo": {"hop_length": 256}, "separate": {"normalization_threshold": 0.9}}
     models = cli._parse_models(("separate=bs-roformer-ep317", "lead.dereverb_model=none"))
     assert models == {"separate": {"model": "bs-roformer-ep317"}, "lead": {"dereverb_model": "none"}}
-    merged = cli._merge({"tempo": {"hop_length": 128, "sample_rate": 22050}}, sets)
+    merged = jobs.merge({"tempo": {"hop_length": 128, "sample_rate": 22050}}, sets)
     assert merged["tempo"] == {"hop_length": 256, "sample_rate": 22050}
 
 

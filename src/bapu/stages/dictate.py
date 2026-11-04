@@ -51,11 +51,16 @@ def _run(ctx: StageContext) -> StageResult:
         proc = subprocess.Popen([sys.executable, "-I", "-m", "bapu.backends.qwen_asr_worker", str(args)],
                                 stdout=subprocess.PIPE, stderr=errf, text=True, encoding="utf-8")
         assert proc.stdout is not None
-        for line in proc.stdout:
-            parts = line.split()
-            if parts[:2] == ["BAPU", "progress"]:
-                ctx.progress(f"乐句 {parts[2]} / {parts[3]}", int(parts[2]) / int(parts[3]))
-        code = proc.wait()
+        try:
+            for line in proc.stdout:
+                parts = line.split()
+                if parts[:2] == ["BAPU", "progress"]:
+                    ctx.progress(f"乐句 {parts[2]} / {parts[3]}", int(parts[2]) / int(parts[3]))
+            code = proc.wait()
+        except BaseException:  # cancelled or failed: do not leave the worker on the GPU
+            proc.kill()
+            proc.wait()
+            raise
     if code != 0:
         raise RuntimeError(f"听写失败（退出码 {code}），见 {log}")
     res = json.loads(raw.read_text(encoding="utf-8"))["segments"]

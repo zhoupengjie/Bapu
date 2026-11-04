@@ -186,6 +186,7 @@ dependencies = [
     { name = "audioread" },
     { name = "click" },
     { name = "einops" },
+    { name = "fastapi" },
     { name = "librosa" },
     { name = "lightning" },
     { name = "mido" },
@@ -193,6 +194,7 @@ dependencies = [
     { name = "onnxruntime" },
     { name = "opencc-python-reimplemented" },
     { name = "praat-parselmouth" },
+    { name = "python-multipart" },
     { name = "pyyaml" },
     { name = "qwen-asr" },
     { name = "scipy" },
@@ -202,10 +204,12 @@ dependencies = [
     { name = "torch" },
     { name = "torchaudio" },
     { name = "torchvision" },
+    { name = "uvicorn" },
 ]
 
 [package.dev-dependencies]
 dev = [
+    { name = "httpx" },
     { name = "pytest" },
 ]
 
@@ -215,6 +219,7 @@ requires-dist = [
     { name = "audioread", specifier = ">=3.1" },
     { name = "click", specifier = ">=8.5" },
     { name = "einops", specifier = ">=0.8" },
+    { name = "fastapi", specifier = ">=0.162" },
     { name = "librosa", specifier = ">=1.0" },
     { name = "lightning", specifier = ">=2.6" },
     { name = "mido", specifier = ">=1.3.3" },
@@ -222,6 +227,7 @@ requires-dist = [
     { name = "onnxruntime", specifier = ">=1.31" },
     { name = "opencc-python-reimplemented", specifier = ">=0.1.7" },
     { name = "praat-parselmouth", specifier = ">=0.4.7" },
+    { name = "python-multipart", specifier = ">=0.0.33" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "qwen-asr", specifier = ">=0.0.6" },
     { name = "scipy", specifier = ">=1.18" },
@@ -231,10 +237,14 @@ requires-dist = [
     { name = "torch", specifier = "==2.11.0", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torchaudio", specifier = "==2.11.0", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torchvision", specifier = "==0.26.0", index = "https://download.pytorch.org/whl/cu128" },
+    { name = "uvicorn", specifier = ">=0.54" },
 ]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=9.2.0" }]
+dev = [
+    { name = "httpx", specifier = ">=0.28" },
+    { name = "pytest", specifier = ">=9.2.0" },
+]
 
 [[package]]
 name = "beartype"

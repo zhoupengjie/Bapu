@@ -60,12 +60,17 @@ def _run(ctx: StageContext) -> StageResult:
             stdout=subprocess.PIPE, stderr=errf, text=True, encoding="utf-8",
         )
         assert proc.stdout is not None
-        for line in proc.stdout:
-            parts = line.split()
-            if parts[:2] == ["BAPU", "progress"]:
-                i, n = int(parts[2]), int(parts[3])
-                ctx.progress(f"段 {i} / {n}", i / n)
-        code = proc.wait()
+        try:
+            for line in proc.stdout:
+                parts = line.split()
+                if parts[:2] == ["BAPU", "progress"]:
+                    i, n = int(parts[2]), int(parts[3])
+                    ctx.progress(f"段 {i} / {n}", i / n)
+            code = proc.wait()
+        except BaseException:  # cancelled or failed: do not leave the worker on the GPU
+            proc.kill()
+            proc.wait()
+            raise
     if code != 0:
         raise RuntimeError(f"SOME 失败（退出码 {code}），见 {log}")
 

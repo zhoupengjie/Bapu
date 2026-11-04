@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import sys
 import time
 from pathlib import Path
@@ -11,12 +10,11 @@ from typing import Any
 import click
 import yaml
 
-from bapu import compare, pipeline, report
+from bapu import compare, jobs, pipeline, report
 from bapu import corrections as corr_mod
 from bapu.corrections import CorrectionsError
 from bapu.models.registry import LicenseNotAccepted, ModelSpec, Registry, RegistryError
 from bapu.progress import PrintProgress
-from bapu.stages import STAGES
 from bapu.workdir import WorkDir
 
 
@@ -28,12 +26,6 @@ def _fmt_size(n: int | None) -> str:
     if n >= 1e6:
         return f"{n / 1e6:.0f} MB"
     return f"{n / 1e3:.0f} KB"
-
-
-def _slug(name: str) -> str:
-    s = re.sub(r"[\s_]+", "-", name.strip().lower())
-    s = re.sub(r"[^\w\-.]", "", s)
-    return s.strip("-.") or "song"
 
 
 def _parse_sets(values: tuple[str, ...]) -> dict[str, dict[str, Any]]:
@@ -62,14 +54,6 @@ def _parse_models(values: tuple[str, ...]) -> dict[str, dict[str, Any]]:
             raise click.BadParameter(f"{stage} 的模型参数是：{', '.join(st.model_params)}")
         out.setdefault(stage, {})[param] = mid
     return out
-
-
-def _merge(*layers: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    merged: dict[str, dict[str, Any]] = {}
-    for layer in layers:
-        for stage, params in layer.items():
-            merged.setdefault(stage, {}).update(params)
-    return merged
 
 
 def _show_license(spec: ModelSpec) -> None:
@@ -129,26 +113,19 @@ def run(audio: Path, out: Path | None, from_stage: str | None, until: str | None
         sets: tuple[str, ...], models: tuple[str, ...], accept_licenses: bool,
         lyrics: Path | None, lang: str | None) -> None:
     """处理一首歌。没变的步骤直接用缓存。"""
-    wd = WorkDir(out or Path("work") / _slug(audio.stem))
+    wd = WorkDir(out or Path("work") / jobs.slug(audio.stem))
     registry = Registry.load()
     sources: dict[str, Path] = {"source": audio}
-    lyrics = lyrics or _stored_lyrics(wd)
+    lyrics = lyrics or jobs.stored_source(wd, "lyrics")
     if lyrics:
         sources["lyrics"] = lyrics
     try:
         extra = {"lyrics": {"lang": lang}} if lang else {}
-        overrides = _merge(wd.load_params(), _parse_sets(sets), _parse_models(models), extra)
+        overrides = jobs.merge(wd.load_params(), _parse_sets(sets), _parse_models(models), extra)
         # Check every model the run will need before starting, so a missing one
         # is downloaded (after its license is accepted) instead of failing mid-way.
-        runnable = pipeline.plan_keys({n: "?" for n in sources}, overrides)
-        for st in STAGES:
-            if st.name not in runnable:
-                break
-            for spec in pipeline.resolve_models(st, pipeline.resolve_params(st, overrides.get(st.name)), registry).values():
-                if spec is not None and registry.status(spec) not in ("ready", "builtin"):
-                    _pull(registry, spec, accept_licenses)
-            if until and st.name == until:
-                break
+        for spec in jobs.missing_models(sources, overrides, registry, until):
+            _pull(registry, spec, accept_licenses)
         wd.root.mkdir(parents=True, exist_ok=True)
         wd.save_params(overrides)
         outcomes = pipeline.run(wd, sources, registry=registry, overrides=overrides,
@@ -164,13 +141,6 @@ def run(audio: Path, out: Path | None, from_stage: str | None, until: str | None
         click.echo("\n没有参考歌词：歌词全部来自听写，审查报告里每句都要确认。可以加 --lyrics <文件> 作参考。")
     if written:
         click.echo(f"\n审查报告：{written['review_md']}（{written['summary']}）")
-
-
-def _stored_lyrics(wd: WorkDir) -> Path | None:
-    if not wd.manifest_path.exists():
-        return None
-    p = wd.sources().get("lyrics")
-    return Path(p[0]) if p and Path(p[0]).exists() else None
 
 
 def _metrics_line(m: dict[str, Any]) -> str:
@@ -197,45 +167,34 @@ def export(out: Path, formats: str, audio: str) -> None:
     """把 score.json 导出到 <工作目录>/export/。"""
     import json
 
-    from bapu.export import midi, paste
-    from bapu.export import svp as svp_export
-
     wd = WorkDir(out)
-    score_p = wd.root / "score.json"
-    if not score_p.exists():
-        raise click.ClickException("还没有 score.json：先用 --lyrics 跑完整个流程")
-    score = json.loads(score_p.read_text(encoding="utf-8"))
-    name = _slug(Path(wd.sources().get("source", ("song",))[0]).stem)
-    dest = wd.root / "export"
-    wanted = [f.strip() for f in formats.split(",") if f.strip()]
-    for f in wanted:
-        if f == "mid":
-            p = midi.write(score, dest / f"{name}.mid")
-        elif f == "paste":
-            p = paste.write(score, dest / f"{name}.paste.txt")
-        elif f == "svp":
-            p = svp_export.write(score, dest / f"{name}.svp", audio_tracks=_audio_tracks(wd, audio), name=name)
-        else:
-            raise click.ClickException(f"不认识的格式：{f}")
+    try:
+        written = jobs.export(wd, [f.strip() for f in formats.split(",") if f.strip()], audio)
+    except jobs.JobError as e:
+        raise click.ClickException(str(e)) from None
+    for f, p in written:
         click.echo(f"{f:<6} {p}")
+    score = json.loads((wd.root / "score.json").read_text(encoding="utf-8"))
     click.echo(f"{len(score['notes'])} 个音符，{score['tempo']['bpm']:g} BPM")
 
 
-AUDIO_TRACKS = {"accompaniment": ("separate", "instrumental"), "lead_dry": ("lead", "lead_dry")}
+@main.command()
+@click.option("--work", "work_root", default="work", show_default=True, type=click.Path(file_okay=False, path_type=Path),
+              help="任务目录的根目录")
+@click.option("--host", default="127.0.0.1", show_default=True, help="只建议本机地址")
+@click.option("--port", default=8765, show_default=True)
+def serve(work_root: Path, host: str, port: int) -> None:
+    """启动本机 API 服务（给前端用）。"""
+    import uvicorn
 
+    from bapu.server import create_app
+    from bapu.service import JobService
 
-def _audio_tracks(wd: WorkDir, spec: str) -> list[tuple[str, Path]]:
-    """Audio tracks for the .svp: the separated accompaniment and the dry lead
-    (for comparing the synthesised vocal with the original)."""
-    out = []
-    for key in [x.strip() for x in spec.split(",") if x.strip() and x.strip() != "none"]:
-        if key not in AUDIO_TRACKS:
-            raise click.ClickException(f"不认识的音频轨：{key}（可用：{', '.join(AUDIO_TRACKS)}、none）")
-        stage, artifact = AUDIO_TRACKS[key]
-        rec = wd.get(stage)
-        if rec and artifact in rec.outputs:
-            out.append((key.replace("_", " "), (wd.root / rec.outputs[artifact]).resolve()))
-    return out
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        click.echo("注意：服务会返回歌词和音频，不要监听本机以外的地址。", err=True)
+    app = create_app(JobService(work_root))
+    click.echo(f"Bapu API：http://{host}:{port}/docs")
+    uvicorn.run(app, host=host, port=port, log_level="info")
 
 
 @main.group()
