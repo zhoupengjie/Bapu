@@ -1,0 +1,138 @@
+# Bapu model registry.
+#
+# Only models listed here can be downloaded. Every file has a fixed SHA-256 and
+# size; a download that does not match is discarded. `dir` is relative to the
+# cache root (BAPU_CACHE_DIR, default `.cache/`). `verified = true` means the
+# model reproduced the numbers in docs/pipeline-notes.md on the validation song.
+#
+# license.commercial: "yes" | "no" | "unknown"
+
+[[model]]
+id = "bs-roformer-ep317"
+stage = "separate"
+name = "BS-RoFormer ep_317 (viperx)"
+backend = "audio-separator"
+verified = true
+dir = "models/audio-separator"
+entry = "model_bs_roformer_ep_317_sdr_12.9755.ckpt"
+license = { name = "未声明（TRvlvr/model_repo 没有 LICENSE 文件）", url = "https://github.com/TRvlvr/model_repo", commercial = "unknown", note = "权重仓库没有许可证文件，分发或商用前请自行确认。" }
+
+[[model.files]]
+name = "model_bs_roformer_ep_317_sdr_12.9755.ckpt"
+size = 639331213
+sha256 = "5b84f37e8d444c8cb30c79d77f613a41c05868ff9c9ac6c7049c00aefae115aa"
+urls = [
+  "https://github.com/nomadkaraoke/python-audio-separator/releases/download/model-configs/model_bs_roformer_ep_317_sdr_12.9755.ckpt",
+  "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/model_bs_roformer_ep_317_sdr_12.9755.ckpt",
+]
+
+[[model.files]]
+name = "model_bs_roformer_ep_317_sdr_12.9755.yaml"
+size = 2273
+sha256 = "2bfdd16c656bd9519aba757cc4f8834b7ede675eb1e00ec4772d74ae1c41af7f"
+urls = [
+  "https://github.com/nomadkaraoke/python-audio-separator/releases/download/model-configs/model_bs_roformer_ep_317_sdr_12.9755.yaml",
+  "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/mdx_model_data/mdx_c_configs/model_bs_roformer_ep_317_sdr_12.9755.yaml",
+]
+
+[[model]]
+id = "mel-karaoke-aufr33-viperx"
+stage = "lead.karaoke"
+name = "Mel-Band RoFormer Karaoke (aufr33 / viperx)"
+backend = "audio-separator"
+verified = true
+dir = "models/audio-separator"
+entry = "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt"
+license = { name = "以发布页为准", url = "https://github.com/nomadkaraoke/python-audio-separator", commercial = "unknown", note = "发布者没有在权重旁给出许可证，使用前请到发布页确认。" }
+
+[[model.files]]
+name = "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt"
+size = 913096801
+sha256 = "1de20d459332fe8869aeb01327a31df0032262706e1365114e852dc271779813"
+urls = [
+  "https://github.com/nomadkaraoke/python-audio-separator/releases/download/model-configs/mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt",
+  "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt",
+]
+
+[[model.files]]
+name = "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956_config.yaml"
+size = 1726
+sha256 = "b35077d94861f068097cce1a5e54633c055e7dcc2613eade4e4dc7c7c9c3f48b"
+urls = [
+  "https://github.com/nomadkaraoke/python-audio-separator/releases/download/model-configs/mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956_config.yaml",
+  "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/mdx_model_data/mdx_c_configs/mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956_config.yaml",
+]
+
+[[model]]
+id = "mel-dereverb-anvuew"
+stage = "lead.dereverb"
+name = "Mel-Band RoFormer DeReverb (anvuew)"
+backend = "audio-separator"
+verified = true
+dir = "models/audio-separator"
+entry = "dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt"
+license = { name = "以发布页为准", url = "https://github.com/nomadkaraoke/python-audio-separator", commercial = "unknown", note = "发布者没有在权重旁给出许可证，使用前请到发布页确认。" }
+
+[[model.files]]
+name = "dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt"
+size = 913107578
+sha256 = "9262877b87e9ebb0fb808a456b0a411fa677f5df31c8383c1254af531c078970"
+urls = [
+  "https://github.com/nomadkaraoke/python-audio-separator/releases/download/model-configs/dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt",
+  "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt",
+]
+
+[[model.files]]
+name = "dereverb_mel_band_roformer_anvuew.yaml"
+size = 1846
+sha256 = "1599d9ea717ea2b5b3bc55d936f752b8d0f67baaa3de95acd6d03259a2f37784"
+urls = [
+  "https://github.com/nomadkaraoke/python-audio-separator/releases/download/model-configs/dereverb_mel_band_roformer_anvuew.yaml",
+  "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/mdx_model_data/mdx_c_configs/dereverb_mel_band_roformer_anvuew.yaml",
+]
+
+[[model]]
+id = "librosa-beat-track"
+stage = "tempo"
+name = "librosa beat_track"
+backend = "librosa"
+verified = true
+license = { name = "ISC", url = "https://github.com/librosa/librosa/blob/main/LICENSE.md", commercial = "yes" }
+
+[[model]]
+id = "some-0119-continuous256-5spk"
+stage = "transcribe"
+name = "SOME 0119_continuous256_5spk (v1.0.0-baseline)"
+backend = "some"
+verified = true
+dir = "models/some/0119_continuous256_5spk"
+entry = "model_ckpt_steps_100000_simplified.ckpt"
+license = { name = "MIT", url = "https://github.com/openvpi/SOME/blob/main/LICENSE", commercial = "yes" }
+# Released as a zip; the files below are located inside it by name.
+archive = { url = "https://github.com/openvpi/SOME/releases/download/v1.0.0-baseline/0119_continuous128_5spk.zip", size = 435401333 }
+
+[[model.files]]
+name = "model_ckpt_steps_100000_simplified.ckpt"
+size = 470801253
+sha256 = "aa710fce920b4dae281b0e6cc2acba83345d82ee62d51f7bafeb29636f28f97c"
+
+[[model.files]]
+name = "config.yaml"
+size = 3210
+sha256 = "3719983d1fbc95d804c38fd08fb956a18a467417b52e295c57ccc35f30910910"
+
+[[model]]
+id = "mms-fa"
+stage = "align"
+name = "MMS_FA (torchaudio)"
+backend = "mms"
+verified = true
+dir = "torch/hub/checkpoints"
+entry = "model.pt"
+license = { name = "CC BY-NC 4.0", url = "https://creativecommons.org/licenses/by-nc/4.0/", commercial = "no", note = "仅限非商业用途。" }
+
+[[model.files]]
+name = "model.pt"
+size = 1262047414
+sha256 = "20ef12963ab4924bef49ac4fc7f58ad5da2ee43b2c11bc8c853c9b90ecdbc680"
+urls = ["https://dl.fbaipublicfiles.com/mms/torchaudio/ctc_alignment_mling_uroman/model.pt"]

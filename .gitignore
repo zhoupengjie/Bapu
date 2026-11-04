@@ -1,0 +1,25 @@
+# Environment
+.venv/
+__pycache__/
+*.pyc
+
+# Model weights and caches (never commit weights; each has its own license)
+.cache/
+
+# Vendored upstream code checked out by setup, not committed
+third_party/
+
+# Per-song working data and outputs (may contain copyrighted audio and lyrics)
+work/
+outputs/
+*.wav
+*.mp3
+*.mp4
+*.flac
+*.ass
+*.lrc
+*.svp
+*.mid
+
+# Test caches
+.pytest_cache/

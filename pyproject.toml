@@ -1,0 +1,70 @@
+[project]
+name = "bapu"
+version = "0.0.1"
+description = "扒谱: turn a song recording into a singable vocal score with lyrics (MIDI / SynthV project)."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = "MIT"
+dependencies = [
+    # GPU stack (RTX 50-series needs CUDA 12.8 wheels; see [tool.uv.sources]).
+    "torch==2.11.0",
+    "torchaudio==2.11.0",
+    "torchvision==0.26.0",
+    # Source separation (BS-RoFormer / Mel-Band RoFormer via audio-separator).
+    # audio-separator 0.48's base install misses onnxruntime and audioread.
+    "audio-separator==0.48.0",
+    "onnxruntime>=1.31",
+    "audioread>=3.1",
+    # Audio I/O and analysis. torchaudio 2.11 needs torchcodec for load(); use soundfile.
+    "librosa>=1.0",
+    "soundfile>=0.14",
+    "soxr>=1.1",
+    "numpy>=2.5",
+    "scipy>=1.18",
+    # SOME (singing voice -> MIDI) inference deps; SOME itself lives in third_party/.
+    "mido>=1.3.3",
+    "click>=8.5",
+    "praat-parselmouth>=0.4.7",
+    "lightning>=2.6",
+    "einops>=0.8",
+    "pyyaml>=6.0",
+    # Lyrics -> phonemes for forced alignment.
+    "tojyutping>=3.2",
+    "opencc-python-reimplemented>=0.1.7",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bapu"]
+
+[tool.uv]
+# CUDA wheels only; Apple Silicon would need a different torch line.
+environments = [
+    "sys_platform == 'win32'",
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchaudio = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
+
+[project.scripts]
+bapu = "bapu.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["regression: full-song regression tests; need BAPU_REGRESSION_AUDIO and the GPU models"]
