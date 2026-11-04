@@ -183,7 +183,9 @@ def export(out: Path, formats: str, audio: str) -> None:
               help="任务目录的根目录")
 @click.option("--host", default="127.0.0.1", show_default=True, help="只建议本机地址")
 @click.option("--port", default=8765, show_default=True)
-def serve(work_root: Path, host: str, port: int) -> None:
+@click.option("--web", "web_dir", default="web/dist", show_default=True, type=click.Path(file_okay=False, path_type=Path),
+              help="构建好的前端（cd web && npm run build）；不存在时只提供 API")
+def serve(work_root: Path, host: str, port: int, web_dir: Path) -> None:
     """启动本机 API 服务（给前端用）。"""
     import uvicorn
 
@@ -192,8 +194,12 @@ def serve(work_root: Path, host: str, port: int) -> None:
 
     if host not in ("127.0.0.1", "localhost", "::1"):
         click.echo("注意：服务会返回歌词和音频，不要监听本机以外的地址。", err=True)
-    app = create_app(JobService(work_root))
-    click.echo(f"Bapu API：http://{host}:{port}/docs")
+    has_web = (web_dir / "index.html").exists()
+    app = create_app(JobService(work_root), static_dir=web_dir if has_web else None)
+    if has_web:
+        click.echo(f"Bapu：http://{host}:{port}/   （API 文档：/docs）")
+    else:
+        click.echo(f"Bapu API：http://{host}:{port}/docs   （没有找到 {web_dir}，前端请先 npm run build）")
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 

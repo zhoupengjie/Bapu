@@ -49,7 +49,8 @@ class PullBody(BaseModel):
     accept_license: bool = False
 
 
-def create_app(service: JobService) -> FastAPI:
+def create_app(service: JobService, static_dir: Path | None = None) -> FastAPI:
+    """`static_dir`: a built front end (web/dist) served at `/`."""
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         service.start()
@@ -221,6 +222,10 @@ def create_app(service: JobService) -> FastAPI:
             raise HTTPException(404, "没有这个文件")
         return FileResponse(p, filename=p.name)
 
+    if static_dir is not None and (static_dir / "index.html").exists():
+        from fastapi.staticfiles import StaticFiles
+
+        app.mount("/", StaticFiles(directory=static_dir, html=True), name="web")
     return app
 
 

@@ -39,10 +39,12 @@ uv run bapu status work/<文件名>
 uv run bapu corrections from-svp work/<文件名> "<工程>.svp"   # 把在 SV 里改过的地方读成修正
 uv run bapu eval work/<文件名> "<工程>.svp" --lines 2,10      # 自动版本和 SV 里的版本逐句对比
 uv run bapu export work/<文件名>                # 导出 MIDI（带歌词）、.svp 工程、粘贴文件到 export/
-uv run bapu serve                            # 本机 API（http://127.0.0.1:8765/docs），给前端用
+uv run bapu serve                            # 本机网页界面 + API：http://127.0.0.1:8765/
 uv run pytest                                # 单元测试（只用虚构数据）
 ```
 
+- 网页界面：第一次先 `cd web && npm install && npm run build`，之后 `uv run bapu serve` 就会同时提供界面和 API。
+  开发前端时用 `npm --prefix web run dev`（http://127.0.0.1:5173，/api 代理到 8765）。
 - 输出：`score.json`（乐谱）、`review.md` / `review.json`（审查报告，只有时间、编号和置信度）。
 - `--set`、`--model` 保存在工作目录的 `params.json`；`--lyrics` 记在 `manifest.json`，下次可以省略。
 - 修正写在工作目录的 `corrections.yaml`，按时间定位，重跑不会覆盖；格式见 `src/bapu/corrections.py`。

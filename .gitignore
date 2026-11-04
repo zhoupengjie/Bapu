@@ -23,3 +23,10 @@ outputs/
 
 # Test caches
 .pytest_cache/
+
+# Front end
+web/node_modules/
+web/dist/
+.claude/worktrees/
+.claude/settings.local.json
+web/*.tsbuildinfo
