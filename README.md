@@ -26,20 +26,24 @@
 uv sync
 ```
 
-## 用法（v0.1 进行中：目前到转谱为止）
+## 用法（v0.1 进行中：已到乐谱 JSON 和审查报告，导出在 M3）
 
 ```bash
 uv run bapu models list                     # 注册表里的模型、下载状态、许可证
 uv run bapu models pull <模型ID>             # 先显示许可证，确认后下载并校验 SHA-256
-uv run bapu run "<歌曲>.wav"                 # 输出到 work/<文件名>/，没变的步骤用缓存
-uv run bapu run "<歌曲>.wav" --set tempo.hop_length=1024   # 改参数只重跑这一步和之后的步骤
+uv run bapu run "<歌曲>.wav" --lyrics "<字幕>.ass"   # 输出到 work/<文件名>/，没变的步骤用缓存
+uv run bapu run "<歌曲>.wav" --set assign.gap_pen=0.4   # 改参数只重跑这一步和之后的步骤
 uv run bapu run "<歌曲>.wav" --model lead.dereverb_model=none
 uv run bapu status work/<文件名>
+uv run bapu corrections from-svp work/<文件名> "<工程>.svp"   # 把在 SV 里改过的地方读成修正
+uv run bapu eval work/<文件名> "<工程>.svp" --lines 2,10      # 自动版本和 SV 里的版本逐句对比
 uv run pytest                                # 单元测试（只用虚构数据）
 ```
 
-`--set` 和 `--model` 会保存在工作目录的 `params.json` 里，下次运行沿用。
-整首歌回归测试：设置 `BAPU_REGRESSION_AUDIO` 指向验证录音后运行 `uv run pytest -m regression`。
+- 输出：`score.json`（乐谱）、`review.md` / `review.json`（审查报告，只有时间、编号和置信度）。
+- `--set`、`--model` 保存在工作目录的 `params.json`；`--lyrics` 记在 `manifest.json`，下次可以省略。
+- 修正写在工作目录的 `corrections.yaml`，按时间定位，重跑不会覆盖；格式见 `src/bapu/corrections.py`。
+- 整首歌回归测试：设置 `BAPU_REGRESSION_AUDIO` 和 `BAPU_REGRESSION_LYRICS` 后运行 `uv run pytest -m regression`。
 
 模型权重不随项目分发，各自有不同的许可（见笔记的“许可”一节）。本地缓存放在 `.cache/`，
 SOME 的代码放在 `third_party/SOME`，两者都不提交到仓库。

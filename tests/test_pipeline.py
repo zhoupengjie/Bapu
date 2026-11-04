@@ -72,9 +72,9 @@ def test_cache_key_is_order_independent():
 
 def test_second_run_uses_cache(env):
     wd, src, reg, calls, stages = env
-    first = pipeline.run(wd, src, registry=reg, stages=stages)
+    first = pipeline.run(wd, {"source": src}, registry=reg, stages=stages)
     assert [o.status for o in first] == ["ran", "ran", "ran"]
-    second = pipeline.run(wd, src, registry=reg, stages=stages)
+    second = pipeline.run(wd, {"source": src}, registry=reg, stages=stages)
     assert [o.status for o in second] == ["cached", "cached", "cached"]
     assert calls == ["a", "b", "c"]
     assert (wd.root / "03_c" / "c.txt").read_text() == "fictional-audio|a1|b1|c"
@@ -82,60 +82,60 @@ def test_second_run_uses_cache(env):
 
 def test_param_change_reruns_only_from_that_stage(env):
     wd, src, reg, calls, stages = env
-    pipeline.run(wd, src, registry=reg, stages=stages)
+    pipeline.run(wd, {"source": src}, registry=reg, stages=stages)
     calls.clear()
-    out = pipeline.run(wd, src, registry=reg, stages=stages, overrides={"b": {"k": 2}})
+    out = pipeline.run(wd, {"source": src}, registry=reg, stages=stages, overrides={"b": {"k": 2}})
     assert [o.status for o in out] == ["cached", "ran", "ran"]
     assert calls == ["b", "c"]
 
 
 def test_source_change_reruns_everything(env):
     wd, src, reg, calls, stages = env
-    pipeline.run(wd, src, registry=reg, stages=stages)
+    pipeline.run(wd, {"source": src}, registry=reg, stages=stages)
     src.write_text("other-audio")
     calls.clear()
-    pipeline.run(wd, src, registry=reg, stages=stages)
+    pipeline.run(wd, {"source": src}, registry=reg, stages=stages)
     assert calls == ["a", "b", "c"]
 
 
 def test_from_forces_rerun_downstream(env):
     wd, src, reg, calls, stages = env
-    pipeline.run(wd, src, registry=reg, stages=stages)
+    pipeline.run(wd, {"source": src}, registry=reg, stages=stages)
     calls.clear()
-    out = pipeline.run(wd, src, registry=reg, stages=stages, from_stage="b")
+    out = pipeline.run(wd, {"source": src}, registry=reg, stages=stages, from_stage="b")
     assert [o.status for o in out] == ["cached", "ran", "ran"]
 
 
 def test_deleted_output_reruns_that_stage(env):
     wd, src, reg, calls, stages = env
-    pipeline.run(wd, src, registry=reg, stages=stages)
+    pipeline.run(wd, {"source": src}, registry=reg, stages=stages)
     (wd.root / "01_a" / "a.txt").unlink()
     calls.clear()
-    pipeline.run(wd, src, registry=reg, stages=stages)
+    pipeline.run(wd, {"source": src}, registry=reg, stages=stages)
     assert calls == ["a"]
 
 
 def test_until_stops_early(env):
     wd, src, reg, calls, stages = env
-    out = pipeline.run(wd, src, registry=reg, stages=stages, until="b")
+    out = pipeline.run(wd, {"source": src}, registry=reg, stages=stages, until="b")
     assert [o.stage for o in out] == ["a", "b"]
 
 
 def test_unknown_param_is_rejected(env):
     wd, src, reg, calls, stages = env
     with pytest.raises(pipeline.PipelineError):
-        pipeline.run(wd, src, registry=reg, stages=stages, overrides={"a": {"nope": 1}})
+        pipeline.run(wd, {"source": src}, registry=reg, stages=stages, overrides={"a": {"nope": 1}})
 
 
 def test_model_from_wrong_stage_is_rejected(env):
     wd, src, reg, calls, stages = env
     with pytest.raises(pipeline.PipelineError):
-        pipeline.run(wd, src, registry=reg, stages=stages, overrides={"b": {"model": "algo-other"}})
+        pipeline.run(wd, {"source": src}, registry=reg, stages=stages, overrides={"b": {"model": "algo-other"}})
 
 
 def test_status_reports_stale_after_param_change(env):
     wd, src, reg, calls, stages = env
-    pipeline.run(wd, src, registry=reg, stages=stages)
+    pipeline.run(wd, {"source": src}, registry=reg, stages=stages)
     wd.save_params({"c": {}, "b": {"k": 5}})
     states = {r["stage"]: r["state"] for r in pipeline.status(wd, reg, stages)}
     assert states == {"a": "fresh", "b": "stale", "c": "stale"}

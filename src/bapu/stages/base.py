@@ -23,6 +23,7 @@ class StageContext:
     models: dict[str, ModelSpec | None]  # model param name -> spec (None = disabled)
     registry: Registry
     progress: StageProgress
+    corrections: list[dict[str, Any]] = field(default_factory=list)  # entries of this stage's types
 
 
 @dataclass
@@ -43,3 +44,5 @@ class Stage:
     # parameter name -> registry stage tag the chosen model must carry
     model_params: dict[str, str] = field(default_factory=dict)
     title: str = ""
+    # correction entry types this stage applies; they are part of its cache key
+    corrections: tuple[str, ...] = ()

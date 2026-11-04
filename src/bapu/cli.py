@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import re
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
 import click
 import yaml
 
-from bapu import pipeline
+from bapu import compare, pipeline, report
+from bapu import corrections as corr_mod
+from bapu.corrections import CorrectionsError
 from bapu.models.registry import LicenseNotAccepted, ModelSpec, Registry, RegistryError
 from bapu.progress import PrintProgress
 from bapu.stages import STAGES
@@ -119,16 +122,28 @@ def main() -> None:
 @click.option("--set", "sets", multiple=True, help="步骤.参数=值，会保存在工作目录里")
 @click.option("--model", "models", multiple=True, help="步骤=模型ID（或 步骤.参数=模型ID）")
 @click.option("--accept-licenses", is_flag=True, help="缺模型时不逐个询问，直接接受许可证并下载")
+@click.option("--lyrics", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              help="歌词文件（.ass / .lrc / .txt）；不给时沿用上次的")
+@click.option("--lang", help="歌词语言（目前支持 yue）")
 def run(audio: Path, out: Path | None, from_stage: str | None, until: str | None,
-        sets: tuple[str, ...], models: tuple[str, ...], accept_licenses: bool) -> None:
+        sets: tuple[str, ...], models: tuple[str, ...], accept_licenses: bool,
+        lyrics: Path | None, lang: str | None) -> None:
     """处理一首歌。没变的步骤直接用缓存。"""
     wd = WorkDir(out or Path("work") / _slug(audio.stem))
     registry = Registry.load()
+    sources: dict[str, Path] = {"source": audio}
+    lyrics = lyrics or _stored_lyrics(wd)
+    if lyrics:
+        sources["lyrics"] = lyrics
     try:
-        overrides = _merge(wd.load_params(), _parse_sets(sets), _parse_models(models))
-        # Check every model the run needs before starting, so a missing one is
-        # downloaded (after its license is accepted) instead of failing mid-way.
+        extra = {"lyrics": {"lang": lang}} if lang else {}
+        overrides = _merge(wd.load_params(), _parse_sets(sets), _parse_models(models), extra)
+        # Check every model the run will need before starting, so a missing one
+        # is downloaded (after its license is accepted) instead of failing mid-way.
+        runnable = pipeline.plan_keys({n: "?" for n in sources}, overrides)
         for st in STAGES:
+            if st.name not in runnable:
+                break
             for spec in pipeline.resolve_models(st, pipeline.resolve_params(st, overrides.get(st.name)), registry).values():
                 if spec is not None and registry.status(spec) not in ("ready", "builtin"):
                     _pull(registry, spec, accept_licenses)
@@ -136,14 +151,26 @@ def run(audio: Path, out: Path | None, from_stage: str | None, until: str | None
                 break
         wd.root.mkdir(parents=True, exist_ok=True)
         wd.save_params(overrides)
-        outcomes = pipeline.run(wd, audio, registry=registry, overrides=overrides,
+        outcomes = pipeline.run(wd, sources, registry=registry, overrides=overrides,
                                 from_stage=from_stage, until=until, progress=PrintProgress())
-    except (pipeline.PipelineError, RegistryError) as e:
+        written = report.finalize(wd)
+    except (pipeline.PipelineError, RegistryError, CorrectionsError) as e:
         raise click.ClickException(str(e)) from None
     click.echo(f"\n工作目录：{wd.root}")
     for o in outcomes:
         state = "缓存" if o.status == "cached" else f"{o.record.seconds:.1f} s"
         click.echo(f"  {o.stage:<11} {state:<9} {_metrics_line(o.record.metrics)}")
+    if "lyrics" not in sources:
+        click.echo("\n没有歌词文件，停在转谱之后。加 --lyrics <文件> 继续。")
+    if written:
+        click.echo(f"\n审查报告：{written['review_md']}（{written['summary']}）")
+
+
+def _stored_lyrics(wd: WorkDir) -> Path | None:
+    if not wd.manifest_path.exists():
+        return None
+    p = wd.sources().get("lyrics")
+    return Path(p[0]) if p and Path(p[0]).exists() else None
 
 
 def _metrics_line(m: dict[str, Any]) -> str:
@@ -159,6 +186,60 @@ def status(out: Path) -> None:
     for r in rows:
         secs = f"{r['seconds']:.1f} s" if r["seconds"] is not None else "—"
         click.echo(f"{r['index']:02d} {r['stage']:<11} {label[r['state']]:<5} {secs:<9} {_metrics_line(r['metrics'])}")
+
+
+@main.group()
+def corrections() -> None:
+    """修正文件 corrections.yaml。"""
+
+
+@corrections.command("from-svp")
+@click.argument("out", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.argument("project", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--track", default=1, show_default=True, help="人声轨（从 1 开始）")
+@click.option("--dry-run", is_flag=True, help="只显示会加哪些修正，不写文件")
+def corrections_from_svp(out: Path, project: Path, track: int, dry_run: bool) -> None:
+    """把在 SV 里改过的地方读成修正，追加到 corrections.yaml。"""
+    wd = WorkDir(out)
+    try:
+        entries, stats = compare.from_svp(wd, project, track)
+    except (FileNotFoundError, KeyError, ValueError) as e:
+        raise click.ClickException(str(e)) from None
+    click.echo(f"确认合并 {stats['merge_confirm']}，拒绝合并 {stats['merge_reject']}，"
+               f"人工版本的句子 {stats['line_version']}，音高 {stats['pitch']}")
+    lines = sorted({e["line"] for e in entries if e["type"] == "line_version"})
+    if lines:
+        click.echo("人工版本：" + " ".join(f"L{li:02d}" for li in lines))
+    if dry_run or not entries:
+        return
+    corr_mod.append(wd.corrections_path, entries, comment=f"from-svp {project.name} {time.strftime('%Y-%m-%d %H:%M')}")
+    click.echo(f"已追加到 {wd.corrections_path}；重跑 `bapu run` 生效")
+    if stats.get("needs_rerun"):
+        click.echo("这次只写了合并修正。音符对齐之后才能比较歌词：重跑 `bapu run`，再运行一次 from-svp。")
+
+
+@main.command("eval")
+@click.argument("out", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.argument("project", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--lines", "only", help="只看这些句，如 2,10")
+@click.option("--final", is_flag=True, help="比较最终版本（含人工版本），默认比较自动版本")
+@click.option("--track", default=1, show_default=True)
+def eval_cmd(out: Path, project: Path, only: str | None, final: bool, track: int) -> None:
+    """和 SV 工程里已确认的版本对比：每句有几个音符一致。"""
+    try:
+        res = compare.evaluate(WorkDir(out), project, track, use="lyric" if final else "auto_lyric")
+    except (FileNotFoundError, KeyError, ValueError) as e:
+        raise click.ClickException(str(e)) from None
+    want = {int(x) for x in only.split(",")} if only else None
+    click.echo(f"SV 音符 {res['sv_notes']}，计划音符 {res['plan_notes']}")
+    for li in sorted(res["lines"]):
+        if want and li not in want:
+            continue
+        r = res["lines"][li]
+        click.echo(f"L{li:02d}  字一致 {r['same_lyric']}/{r['notes']}  类型一致 {r['same_kind']}/{r['notes']}"
+                   + ("" if r["matched"] == r["notes"] else f"  （{r['notes'] - r['matched']} 个音符时间对不上）"))
+    t = res["total"]
+    click.echo(f"全曲  字一致 {t['same_lyric']}/{t['notes']}  类型一致 {t['same_kind']}/{t['notes']}")
 
 
 @main.group()

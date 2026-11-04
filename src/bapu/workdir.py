@@ -5,6 +5,7 @@ Layout::
     <root>/
       manifest.json      # what ran, with which key, outputs and metrics
       params.json        # parameter overrides that persist across runs
+      corrections.yaml   # user corrections (never written by a run)
       01_separate/ 02_lead/ ...
 
 A stage's cache key covers its input fingerprints, its parameters (model IDs
@@ -22,7 +23,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-MANIFEST_VERSION = 1
+MANIFEST_VERSION = 2
 
 
 def cache_key(payload: dict[str, Any]) -> str:
@@ -54,14 +55,19 @@ class WorkDir:
         self.root = Path(root)
         self.manifest_path = self.root / "manifest.json"
         self.params_path = self.root / "params.json"
+        self.corrections_path = self.root / "corrections.yaml"
 
     # -- manifest ---------------------------------------------------------
     def load(self) -> dict[str, Any]:
         if self.manifest_path.exists():
             data = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+            if data.get("version") == 1:  # v1 had a single "source"
+                src = data.pop("source", None)
+                data["sources"] = {"source": src} if src else {}
+                data["version"] = MANIFEST_VERSION
             if data.get("version") == MANIFEST_VERSION:
                 return data
-        return {"version": MANIFEST_VERSION, "source": None, "stages": {}}
+        return {"version": MANIFEST_VERSION, "sources": {}, "stages": {}}
 
     def save(self, data: dict[str, Any]) -> None:
         write_json_atomic(self.manifest_path, data)
@@ -71,10 +77,14 @@ class WorkDir:
         data["stages"][name] = asdict(rec)
         self.save(data)
 
-    def set_source(self, path: Path, sha256: str) -> None:
+    def set_sources(self, sources: dict[str, tuple[Path, str]]) -> None:
+        """Record the user's input files (name -> (path, sha256))."""
         data = self.load()
-        data["source"] = {"path": str(Path(path).resolve()), "sha256": sha256}
+        data["sources"] = {n: {"path": str(Path(p).resolve()), "sha256": h} for n, (p, h) in sources.items()}
         self.save(data)
+
+    def sources(self) -> dict[str, tuple[str, str]]:
+        return {n: (s["path"], s["sha256"]) for n, s in (self.load().get("sources") or {}).items()}
 
     def get(self, name: str) -> StageRecord | None:
         raw = self.load()["stages"].get(name)
