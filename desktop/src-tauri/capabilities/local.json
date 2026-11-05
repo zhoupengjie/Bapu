@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "local",
+  "description": "The bundled start page (first-launch setup): listens to setup progress and calls boot / setup_install.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

@@ -5,6 +5,7 @@
       "name": "bapu",
       "runtimeExecutable": ".venv/Scripts/bapu.exe",
       "runtimeArgs": ["serve", "--port", "8765"],
+      "env": { "BAPU_CACHE_DIR": "D:\\Program Files\\Bapu" },
       "port": 8765
     }
   ]

@@ -127,7 +127,7 @@ stage = "align"
 name = "MMS_FA (torchaudio)"
 backend = "mms"
 verified = true
-dir = "torch/hub/checkpoints"
+dir = "models/torch/hub/checkpoints"
 entry = "model.pt"
 license = { name = "CC BY-NC 4.0", url = "https://creativecommons.org/licenses/by-nc/4.0/", commercial = "no", note = "仅限非商业用途。" }
 

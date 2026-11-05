@@ -8,6 +8,7 @@ type TauriGlobal = {
     open(o: { title?: string; directory?: boolean; multiple?: boolean; defaultPath?: string; filters?: Filter[] }): Promise<string | string[] | null>;
   };
   opener: { openUrl(url: string): Promise<void>; revealItemInDir(path: string): Promise<void> };
+  event: { listen<T>(name: string, cb: (e: { payload: T }) => void): Promise<() => void> };
 };
 
 const tauri = (): TauriGlobal | null => (window as unknown as { __TAURI__?: TauriGlobal }).__TAURI__ ?? null;
@@ -30,6 +31,21 @@ export async function desktopPick(kind: PickKind, initial?: string): Promise<str
   const k = KINDS[kind];
   const r = await t.dialog.open({ title: k.title, directory: kind === "folder", multiple: false, defaultPath: initial, filters: k.filters });
   return Array.isArray(r) ? r[0] ?? null : r;
+}
+
+/** Files dropped onto the desktop window (the window takes the drop, so the page gets real paths). */
+export function onDesktopDrop(cb: (paths: string[]) => void): () => void {
+  const t = tauri();
+  if (!t?.event) return () => {};
+  let stop: (() => void) | null = null;
+  let gone = false;
+  t.event.listen<{ paths: string[] }>("tauri://drag-drop", (e) => cb(e.payload.paths ?? []))
+    .then((u) => (gone ? u() : (stop = u)))
+    .catch(() => {});
+  return () => {
+    gone = true;
+    stop?.();
+  };
 }
 
 export function revealInFolder(path: string) {

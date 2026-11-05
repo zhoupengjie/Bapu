@@ -51,6 +51,10 @@ class PullBody(BaseModel):
     accept_license: bool = False
 
 
+class AssociationBody(BaseModel):
+    on: bool
+
+
 class OpenBody(BaseModel):
     path: str  # a .bapu file or a project folder
 
@@ -81,6 +85,16 @@ def create_app(service: JobService, static_dir: Path | None = None) -> FastAPI:
     @app.get("/api/system")
     def system() -> dict[str, Any]:
         return service.system()
+
+    @app.get("/api/system/environment")
+    def environment() -> dict[str, Any]:
+        return service.environment()
+
+    @app.post("/api/system/association")
+    def association(body: AssociationBody) -> dict[str, Any]:
+        """Optional .bapu file association (Windows, current user)."""
+        service.set_association(body.on)
+        return service.environment()
 
     @app.get("/api/system/load")
     def load() -> dict[str, Any]:

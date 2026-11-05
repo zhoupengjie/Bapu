@@ -36,3 +36,6 @@ desktop/node_modules/
 desktop/src-tauri/target/
 desktop/src-tauri/gen/
 desktop/build.log
+
+# Portable build output (scripts/build_portable.py)
+dist/

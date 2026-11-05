@@ -59,7 +59,8 @@ def test_create_in_chosen_folder_then_open_from_a_fresh_service(env, tmp_path):
         assert sorted(x.name for x in folder.iterdir()) == [".bapu", "song.bapu"]  # nothing else outside
         # one project per folder
         again = client.post("/api/jobs", data={"audio_path": str(audio), "folder": str(folder)})
-        assert again.status_code == 400 and "已经有工程" in again.json()["error"]
+        assert again.status_code == 409 and "已经有工程" in again.json()["error"]
+        assert again.json()["detail"] == {"folder": str(folder.resolve()), "project_file": "song.bapu"}
         # a relative folder is refused
         assert client.post("/api/jobs", data={"audio_path": str(audio), "folder": "rel/x"}).status_code == 400
         # lyrics by path are copied in
@@ -134,3 +135,54 @@ def test_export_never_overwrites_a_file_bapu_did_not_write(tmp_path):
     assert project.export_target(folder, data, "Song.svp") == folder / "Song (2).svp"
     (folder / "Song.mid").write_text("someone else's")
     assert project.export_target(folder, data, "Song.mid") == folder / "Song (2).mid"
+
+
+def test_new_project_where_the_bapu_file_was_removed(env, tmp_path):
+    """The user moved the .bapu file away: creating a project there again is allowed.
+    Same audio keeps the finished steps; other audio sets the old results aside."""
+    svc, audio = env()
+    folder = tmp_path / "song folder"
+    with TestClient(create_app(svc)) as client:
+        job = client.post("/api/jobs", data={"audio_path": str(audio), "folder": str(folder)}).json()
+        client.post(f"/api/jobs/{job['id']}/run", json={})
+        assert wait_state(client, job["id"])["state"] == "done"
+        project.project_file(folder).unlink()  # moved away by the user
+
+        again = client.post("/api/jobs", data={"audio_path": str(audio), "folder": str(folder)})
+        assert again.status_code == 201, again.text
+        d = again.json()
+        assert [s["state"] for s in d["stages"]] == ["fresh", "fresh"]  # nothing to recompute
+        assert len([e for e in svc.index.items() if e["path"] == str(folder.resolve())]) == 1
+
+        project.project_file(folder).unlink()
+        other = tmp_path / "other.wav"
+        other.write_text("another song")
+        third = client.post("/api/jobs", data={"audio_path": str(other), "folder": str(folder)})
+        assert third.status_code == 201, third.text
+        assert third.json()["stages"] == []  # a fresh start: nothing has run yet
+        old = [p.name for p in folder.iterdir() if p.name.startswith(".bapu-old-")]
+        assert len(old) == 1 and (folder / old[0] / "manifest.json").exists()  # kept, not deleted
+
+
+def test_data_folder_is_visible(tmp_path):
+    import sys
+
+    d = project.make_data_dir(tmp_path / "p")
+    if sys.platform == "win32":
+        import ctypes
+
+        assert not ctypes.windll.kernel32.GetFileAttributesW(str(d)) & 0x2
+
+
+def test_a_removed_project_file_is_not_brought_back(env, tmp_path):
+    svc, audio = env()
+    folder = tmp_path / "f"
+    with TestClient(create_app(svc)) as client:
+        job = client.post("/api/jobs", data={"audio_path": str(audio), "folder": str(folder)}).json()
+        project.project_file(folder).unlink()
+        assert client.get(f"/api/jobs/{job['id']}").status_code == 404
+        assert project.project_file(folder) is None  # still gone
+        assert job["id"] not in [j["id"] for j in client.get("/api/jobs").json()]
+        # opening the folder on purpose restores it
+        assert client.post("/api/projects/open", json={"path": str(folder)}).status_code == 200
+        assert project.project_file(folder) is not None

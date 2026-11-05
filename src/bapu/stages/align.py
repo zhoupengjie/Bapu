@@ -150,21 +150,22 @@ def _run(ctx: StageContext) -> StageResult:
     spec = ctx.models["model"]
     assert spec is not None
     ctx.registry.ensure_ready(spec)
-    torch.hub.set_dir(str(ctx.registry.model_dir(spec).parent))  # <cache>/torch/hub
+    torch.hub.set_dir(str(ctx.registry.model_dir(spec).parent))  # <cache>/models/torch/hub
 
     data = json.loads(ctx.inputs["lyrics_lines"].read_text(encoding="utf-8"))
     tokens = [dict(t, line=ln["line"]) for ln in data["lines"] for t in ln["tokens"]]
     wav, _ = read_mono(ctx.inputs["lead_dry"], SR, quality="VHQ")
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    from bapu.device import empty_cache, pick
+
+    device = pick()
     ctx.progress(f"载入 {spec.name}（{device}）", 0.0)
     model = MMS_FA.get_model(with_star=False).to(device).eval()
     try:
         em = emissions(model, wav, device, float(ctx.params["chunk_s"]), float(ctx.params["context_s"]), ctx.progress)
     finally:
         del model
-        if device == "cuda":
-            torch.cuda.empty_cache()
+        empty_cache(device)
     ctx.progress("维特比对齐", 0.95)
     dictionary = MMS_FA.get_dict(star=None)
     tokens, decisions = resolve(em, tokens, dictionary, keep_conf=float(ctx.params["keep_conf"]),

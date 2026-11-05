@@ -1,86 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
-import { ApiError, api, follow, fmtSize, type Model, type StageInfo } from "../api";
+import { ApiError, api, follow, type Model, type StageInfo } from "../api";
 import { go, started, useJob } from "../App";
 import { STEPS } from "../flow";
-import DownloadInfo from "../components/DownloadInfo";
+import { ModelDownload, isMissing, neededModels } from "../components/Models";
 import LoadPanel from "../components/LoadPanel";
 
 type Live = { stage: string; fraction: number | null; message: string };
 
 /** Models this job will use that are not on disk yet. */
 function missingModels(stages: StageInfo[], models: Model[], params: Record<string, Record<string, unknown>>): Model[] {
-  const ids = stages.flatMap((s) => Object.keys(s.model_params).map((p) => params[s.name]?.[p] ?? s.defaults[p]));
-  return models.filter((m) => ids.includes(m.id) && (m.status === "missing" || m.status === "corrupt"));
-}
-
-/** First use: accept the licenses once, download, then start. */
-function ModelDownload({ missing, onReady }: { missing: Model[]; onReady: () => void }) {
-  const [agree, setAgree] = useState(false);
-  const [progress, setProgress] = useState<Record<string, number | null>>({});
-  const [error, setError] = useState<string | null>(null);
-  const [manual, setManual] = useState<string | null>(null);
-  const busy = Object.keys(progress).length > 0 || missing.some((m) => m.downloading);
-  const total = missing.reduce((n, m) => n + (m.size ?? 0), 0);
-
-  async function pullAll() {
-    setError(null);
-    for (const m of missing) {
-      try {
-        await api.post(`/models/${encodeURIComponent(m.id)}/pull`, { accept_license: true });
-      } catch (e) {
-        setError(`${m.name}：${(e as Error).message}`);
-        continue;
-      }
-      setProgress((p) => ({ ...p, [m.id]: 0 }));
-      const stop = follow(`/models/${encodeURIComponent(m.id)}/events`, (ev) => {
-        if (ev.type === "progress") setProgress((p) => ({ ...p, [m.id]: ev.total ? (ev.done as number) / (ev.total as number) : null }));
-        if (ev.type === "state" && ev.state !== "downloading") {
-          stop();
-          if (ev.state === "failed") setError(`${m.name} 下载失败：${ev.error}`);
-          setProgress((p) => { const n = { ...p }; delete n[m.id]; return n; });
-          onReady();
-        }
-      });
-    }
-  }
-
-  return (
-    <section className="card stepcard" aria-labelledby="h-dl">
-      <h1 id="h-dl">第一次使用，要先下载模型</h1>
-      <p className="lead">共 {missing.length} 个，约 {fmtSize(total)}。只下载一次，之后都在本机运行。</p>
-      <ul className="dl-list">
-        {missing.map((m) => {
-          const p = progress[m.id];
-          return (
-            <li key={m.id}>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-                <span><b style={{ fontWeight: 500 }}>{m.name}</b> <span className="muted small">{fmtSize(m.size)}</span></span>
-                <span className="small" style={{ color: m.license.commercial === "yes" ? "var(--muted)" : "var(--warn)" }}>
-                  许可证：{m.license.url ? <a href={m.license.url} target="_blank" rel="noreferrer">{m.license.name}</a> : m.license.name}
-                  {m.license.commercial === "no" && "（不可商用）"}
-                </span>
-              </div>
-              {m.id in progress && <span className="bar"><i style={{ width: `${(p ?? 0.03) * 100}%` }} /></span>}
-              <button type="button" className="link" style={{ alignSelf: "flex-start", padding: 0 }} onClick={() => setManual(manual === m.id ? null : m.id)}>
-                {manual === m.id ? "▾" : "▸"} 自己下载（地址、目录和文件名）
-              </button>
-              {manual === m.id && <DownloadInfo model={m} onRecheck={onReady} />}
-            </li>
-          );
-        })}
-      </ul>
-      <label style={{ display: "flex", gap: 10, alignItems: "center" }}>
-        <input type="checkbox" checked={agree} onChange={() => setAgree(!agree)} /> 我已阅读并接受上面这些许可证
-      </label>
-      {error && <div className="notice bad">{error}</div>}
-      <div className="nav-row">
-        <button type="button" className="btn" onClick={() => go("lang")}>← 上一步</button>
-        <button type="button" className="btn primary" disabled={!agree || busy} onClick={pullAll}>
-          {busy ? "下载中…" : "下载并开始处理 →"}
-        </button>
-      </div>
-    </section>
-  );
+  return neededModels(stages, models, params).filter(isMissing);
 }
 
 export default function RunPage() {
@@ -133,7 +62,15 @@ export default function RunPage() {
     setModels(list);
     if (!running && missingModels(stages, list, job.params).length === 0) start();
   };
-  if (missing.length && !running) return <ModelDownload missing={missing} onReady={onModelReady} />;
+  if (missing.length && !running) {
+    return (
+      <section className="card stepcard" aria-labelledby="h-dl">
+        <h1 id="h-dl">还缺模型</h1>
+        <ModelDownload missing={missing} onReady={onModelReady} action="下载并开始处理 →" />
+        <div className="nav-row"><button type="button" className="btn" onClick={() => go("lang")}>← 上一步</button><span /></div>
+      </section>
+    );
+  }
 
   // before the first run the job has no stage rows yet: list the steps from the pipeline
   const rows = stages.map((info) => job.stages.find((r) => r.stage === info.name)

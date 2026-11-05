@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ApiError, api, type JobDetail, type JobSummary } from "../api";
 import { go, started, useJob } from "../App";
-import { desktopPick } from "../desktop";
+import { desktopPick, onDesktopDrop } from "../desktop";
 
 function Nav({ back, next, nextLabel = "下一步", disabled, busy, extra }: {
   back?: () => void; next: () => void; nextLabel?: string; disabled?: boolean; busy?: boolean; extra?: React.ReactNode;
@@ -22,12 +22,15 @@ type Dialog = { path: string | null; folder?: string };
 export async function askPath(kind: "audio" | "lyrics" | "project" | "folder", initial?: string): Promise<Dialog> {
   const local = await desktopPick(kind, initial); // the desktop window has its own dialogs
   if (local === undefined) return api.post<Dialog>("/dialog", { kind, initial });
-  if (local && kind === "audio") {
-    const sep = local.includes("\\") ? "\\" : "/";
-    return { path: local, folder: `${dirName(local)}${sep}${stem(baseName(local))} - Bapu` };
-  }
+  if (local && kind === "audio") return { path: local, folder: suggestFolder(local) };
   return { path: local };
 }
+
+/** Default project folder: next to the song, named after it. */
+const suggestFolder = (p: string) => {
+  const sep = p.includes("\\") ? "\\" : "/";
+  return `${dirName(p)}${sep}${stem(baseName(p))} - Bapu`;
+};
 
 /** A picked input: a real path from the system dialog, or a file dropped into the page. */
 type Picked = { path?: string; file?: File; name: string };
@@ -41,6 +44,13 @@ function FilePick({ kind, accept, picked, onPick, hint }: {
 }) {
   const [over, setOver] = useState(false);
   const input = useRef<HTMLInputElement>(null);
+  // desktop window: a dropped file arrives with its real path
+  const pickRef = useRef(onPick);
+  pickRef.current = onPick;
+  useEffect(() => onDesktopDrop((paths) => {
+    const p = paths.find((x) => !x.toLowerCase().endsWith(".bapu"));
+    if (p) pickRef.current({ path: p, name: baseName(p) }, kind === "audio" ? { path: p, folder: suggestFolder(p) } : undefined);
+  }), [kind]);
   async function browse() {
     try {
       const r = await askPath(kind, picked?.path ? dirName(picked.path) : undefined);
@@ -77,6 +87,7 @@ export function AudioStep() {
   const { job, open } = useJob();
   const [audio, setAudio] = useState<Picked | null>(null);
   const [folder, setFolder] = useState("");
+  const [taken, setTaken] = useState<string | null>(null); // the folder already holds a project
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [recent, setRecent] = useState<JobSummary[]>([]);
@@ -115,6 +126,7 @@ export function AudioStep() {
   async function create() {
     setBusy(true);
     setError(null);
+    setTaken(null);
     try {
       const form = new FormData();
       if (audio!.path) form.set("audio_path", audio!.path);
@@ -125,11 +137,14 @@ export function AudioStep() {
       go("lyrics");
     } catch (e) {
       setError((e as Error).message);
+      const d = e instanceof ApiError && e.status === 409 ? (e.detail as { folder?: string } | undefined) : undefined;
+      setTaken(d?.folder ?? null);
     } finally {
       setBusy(false);
     }
   }
 
+  const alternative = audio?.path ? suggestFolder(audio.path) : null;
   const sep = folder.includes("/") && !folder.includes("\\") ? "/" : "\\";
   return (
     <section className="card stepcard" aria-labelledby="h-audio">
@@ -161,7 +176,21 @@ export function AudioStep() {
           会建 <span className="mono">{folder.trim()}{sep}{stem(audio.name)}.bapu</span>，原曲复制一份进去，处理结果也都放在这个文件夹里。以后双击 .bapu 就能打开。
         </p>
       )}
-      {error && <div className="notice bad">{error}</div>}
+      {error && (
+        <div className="notice bad" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <span>{error}</span>
+          {taken && (
+            <span className="row" style={{ gap: 8 }}>
+              <button type="button" className="btn small" onClick={() => openProject(taken)}>打开这个工程</button>
+              {alternative && alternative.toLowerCase() !== taken.toLowerCase() && (
+                <button type="button" className="btn small" onClick={() => { setFolder(alternative); setError(null); setTaken(null); }}>
+                  改用 {baseName(alternative)}
+                </button>
+              )}
+            </span>
+          )}
+        </div>
+      )}
       <Nav next={create} disabled={!audio || !folder.trim()} busy={busy} nextLabel="建好工程，下一步" />
 
       {recent.length > 0 && (

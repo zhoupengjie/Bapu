@@ -123,6 +123,7 @@ class JobService:
         self.root.mkdir(parents=True, exist_ok=True)
         self.index = project.ProjectIndex(index or self.root / "projects.json")
         self.monitor = LoadMonitor()
+        self._device: dict[str, Any] | None = None
         self.registry = registry or Registry.load()
         self.stages = stages
         self.finalize = finalize
@@ -152,7 +153,9 @@ class JobService:
         if not JOB_ID.match(job_id):
             return None
         folder = self.index.get(job_id) or self.root / job_id
-        return folder if folder.is_dir() and project.is_project(folder) else None
+        # a .bapu/ whose project file the user moved or deleted is not a project any more
+        # (and is not brought back behind their back; opening the folder explicitly does)
+        return folder if folder.is_dir() and project.is_project(folder) and not project.leftover(folder) else None
 
     def workdir(self, job_id: str) -> WorkDir:
         """The project's data folder (`<folder>/.bapu`); older layouts are moved
@@ -203,14 +206,23 @@ class JobService:
         if lyrics is not None and not Path(lyrics).is_file():
             raise ServiceError(f"找不到歌词文件：{lyrics}")
         name = name or audio.stem
+        if folder and (old := self.index.find(Path(folder))) is not None and project.leftover(Path(folder)):
+            self.index.remove(old)  # its project file is gone: the id can be used again
         job_id = self._folder_id(Path(folder)) if folder else self._new_id(name)
         folder = Path(folder) if folder else self.root / job_id
         if not folder.is_absolute():
             raise ServiceError(f"工程文件夹要写完整路径：{folder}")
-        if folder.exists() and project.is_project(folder):
+        if folder.exists() and project.is_project(folder) and not project.leftover(folder):
             f = project.project_file(folder)
-            raise ServiceError(f"这个文件夹里已经有工程了{f'（{f.name}）' if f else ''}：换一个文件夹，或者直接打开它")
+            message = (f"这个文件夹里已经有工程了（{f.name}）。一个文件夹只放一个工程：打开它，或者换一个文件夹。" if f else
+                       "这个文件夹里是旧版 Bapu 的工程，打开它会整理成新的格式；要重新开始的话换一个文件夹。")
+            raise Conflict(message, {"folder": str(folder.resolve()), "project_file": f.name if f else None})
         try:
+            if folder.exists() and project.leftover(folder):
+                # the .bapu file was moved or deleted: start over here (same audio keeps finished steps)
+                project.take_over_leftover(folder, audio)
+            if (old := self.index.find(folder)) is not None:
+                self.index.remove(old)
             folder.mkdir(parents=True, exist_ok=True)
             project.make_data_dir(folder)
             sources = {"source": project.copy_input(folder, audio)}
@@ -228,6 +240,8 @@ class JobService:
         folder = path.parent if path.suffix.lower() == project.EXT else path
         if not folder.is_dir() or not project.is_project(folder):
             raise ServiceError(f"这里没有 Bapu 工程：{path}")
+        if project.leftover(folder):  # opened on purpose: give it its project file back
+            project.ensure(folder)
         if (known := self.index.find(folder)) is not None:
             self.index.touch(known)
             return known
@@ -469,20 +483,53 @@ class JobService:
 
     # -- system ----------------------------------------------------------------------
     def system(self) -> dict[str, Any]:
+        """Cheap: polled by the header and by the desktop shell to see the service is up.
+        GPU numbers come from the driver (NVML), so torch is not imported here."""
         info: dict[str, Any] = {"queue": self._queue.qsize(),
                                 "running": [k for k, s in self._states.items() if s.state == "running"]}
-        try:
-            import torch
-
-            if torch.cuda.is_available():
-                free, total = torch.cuda.mem_get_info()
-                info["gpu"] = {"name": torch.cuda.get_device_name(0), "free": free, "total": total}
-        except Exception:  # noqa: BLE001
-            pass
-        cache = self.registry.cache_root
-        info["model_cache_bytes"] = sum(p.stat().st_size for p in cache.rglob("*") if p.is_file()) if cache.exists() else 0
+        gpu = self.monitor.sample().get("gpu")
+        if gpu:
+            info["gpu"] = {"name": gpu["name"], "free": gpu["mem_total"] - gpu["mem_used"], "total": gpu["mem_total"]}
         info["disk_free"] = shutil.disk_usage(self.root).free
         return info
+
+    def environment(self) -> dict[str, Any]:
+        """For the 环境 page: compute device, Python runtime, where models live, .bapu association."""
+        import os
+        import platform
+
+        from bapu import assoc, device, paths
+
+        if self._device is None:
+            self._device = device.describe()
+        exe = os.environ.get("BAPU_APP_EXE")
+        cmd = assoc.current()
+        models = paths.models_dir()
+        models.mkdir(parents=True, exist_ok=True)
+        return {
+            "device": self._device,
+            "python": platform.python_version(),
+            "portable": paths.home() is not None,
+            "home": str(paths.home()) if paths.home() else None,
+            "runtime": paths.runtime_info(),
+            "models_dir": str(models),
+            "disk_free": shutil.disk_usage(models).free,
+            "association": {"supported": assoc.supported() and bool(exe), "on": bool(cmd and exe and exe.lower() in cmd.lower()),
+                            "other": bool(cmd) and not (exe and exe.lower() in cmd.lower())},
+        }
+
+    def set_association(self, on: bool) -> None:
+        import os
+
+        from bapu import assoc
+
+        exe = os.environ.get("BAPU_APP_EXE")
+        if not exe or not assoc.supported():
+            raise ServiceError("只有 Windows 上的 Bapu 桌面程序能设置文件关联")
+        if on:
+            assoc.associate_app(Path(exe))
+        else:
+            assoc.remove()
 
 
 def _version(text: str) -> str:

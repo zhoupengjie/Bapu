@@ -66,7 +66,6 @@ export type SystemInfo = {
   queue: number;
   running: string[];
   gpu?: { name: string; free: number; total: number };
-  model_cache_bytes: number;
   disk_free: number;
 };
 

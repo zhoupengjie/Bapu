@@ -51,14 +51,23 @@ uv run pytest                                # 单元测试（只用虚构数据
   在第一步用 PyAV（自带 FFmpeg，不用另装）取出第一条音轨，存成 `01_separate/source.wav` 再分离。
 - 工程：每首歌一个工程文件夹，由用户在新建时选（默认在原曲旁边，`<歌名> - Bapu`）。外面只有 `<歌名>.bapu`
   （小 JSON：名字、原曲和歌词的位置）和导出的 `.svp` / `.mid`；复制进来的原曲和歌词、修正、每一步的结果、审查报告
-  都在隐藏的 `.bapu/` 文件夹里。导出不会覆盖不是 Bapu 写的同名文件（例如在 SV 里改过再保存的），会另存为 `(2)`。
+  都在旁边的 `.bapu/` 文件夹里。导出不会覆盖不是 Bapu 写的同名文件（例如在 SV 里改过再保存的），会另存为 `(2)`。
   旧的工程（中间结果直接放在工程文件夹里）第一次打开时自动整理进 `.bapu/`，已经算好的步骤不用重算。
   整个文件夹可以移动；双击 `.bapu`（先运行一次 `bapu register`）或 `bapu open` 打开。最近打开过的工程记在 `work/projects.json`。
   网页里选文件和文件夹用的是系统对话框（由本机服务弹出），所以能拿到真实路径；拖进页面的文件会上传后复制进工程。
-- 桌面窗口（Tauri，`desktop/`）：`cd desktop && npm install && npm run build`，生成
-  `desktop/src-tauri/target/release/Bapu.exe`。它在后台用 `.venv` 启动 `bapu serve`（随机端口，窗口关了服务就退出），
-  在窗口里显示同一套网页界面；选文件用系统对话框，外部链接用默认浏览器打开。建好后再运行一次 `bapu register`，
-  双击 `.bapu` 就用这个窗口打开（已经开着时在原窗口打开）。`npm run bundle` 打 NSIS 安装包（还没处理 Python 环境的分发）。
+- 便携版（给用户用的）：`uv run python scripts/build_portable.py --out "<文件夹>"`，生成约 40 MB 的程序文件夹
+  （`Bapu.exe`、`tools/uv.exe`、`app/` 里的代码和网页、依赖清单）。用户双击 `Bapu.exe`：
+  1. 第一次启动时程序自己部署 Python 推理环境：检测显卡，选 PyTorch 版本（NVIDIA CUDA 12.8 / Intel XPU（实验）/ CPU），
+     用自带的 uv 把 Python 3.12 和全部依赖装进 `runtime/`（不建 venv，整个文件夹可以移动；不写注册表、不进 PATH、
+     不碰系统里的 Python；下载缓存装完就删）。日志在 `data/logs/setup.log`。删掉 `runtime/` 就会重新装。
+  2. 网页流程的第一步“环境”：显示推理设备，下载模型到 `models/`，可选打开“双击 .bapu 用 Bapu 打开”。
+  程序文件夹要放在有写入权限的位置（不要放 C:\Program Files）。重新运行构建脚本只替换 `app/`、`tools/` 和 `Bapu.exe`，
+  `runtime/`、`models/`、`data/` 保留。
+- 桌面窗口（Tauri，`desktop/`）开发：`cd desktop && npm install && npm run build`，生成
+  `desktop/src-tauri/target/release/Bapu.exe`；旁边没有 `app/` 时它用这个代码目录的 `.venv`。它在后台启动
+  `bapu serve --parent-pid`（随机端口，窗口关了服务就退出），选文件用系统对话框，外部链接用默认浏览器打开，
+  `.bapu` 拖到窗口上就打开；已经开着时，再打开的 `.bapu` 在原窗口打开。
+- 开发时如果模型不在 `.cache/models`（比如已经移到便携版里），设 `BAPU_CACHE_DIR=<便携版文件夹>` 共用同一份模型。
 - 网页界面：第一次先 `cd web && npm install && npm run build`，之后 `uv run bapu serve` 就会同时提供界面和 API。
   开发前端时用 `npm --prefix web run dev`（http://127.0.0.1:5173，/api 代理到 8765）。
 - 输出：`score.json`（乐谱）、`review.md` / `review.json`（审查报告，只有时间、编号和置信度）。

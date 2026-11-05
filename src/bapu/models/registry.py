@@ -263,7 +263,7 @@ class Registry:
     def _pull_archive(self, spec: ModelSpec, dest_dir: Path, progress: DownloadProgress | None) -> None:
         arch = spec.archive
         assert arch is not None
-        dl_dir = self.cache_root / "downloads"
+        dl_dir = self.cache_root / "models" / ".downloads"  # partial downloads, next to the models
         dl_dir.mkdir(parents=True, exist_ok=True)
         zip_name = arch.url.rsplit("/", 1)[-1]
         part = dl_dir / (zip_name + ".part")

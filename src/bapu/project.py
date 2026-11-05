@@ -5,7 +5,7 @@ A project is a folder the user chooses (by default next to the song):
     <folder>/
       <name>.bapu        the project file the user double-clicks (small JSON)
       <name>.svp, .mid   exports
-      .bapu/             everything else, hidden: copied inputs, corrections,
+      .bapu/             everything else (a normal folder): copied inputs, corrections,
                          manifest, every stage's output, score and review
 
 Paths in the `.bapu` file are relative to the folder when they are inside it,
@@ -64,7 +64,7 @@ def _legacy_markers(folder: Path) -> bool:
 
 def is_project(folder: Path) -> bool:
     folder = Path(folder)
-    return project_file(folder) is not None or (folder / DATA / "manifest.json").exists() or _legacy_markers(folder)
+    return project_file(folder) is not None or (folder / DATA).is_dir() or _legacy_markers(folder)
 
 
 def data_dir(folder: Path) -> Path:
@@ -85,18 +85,18 @@ def folder_of(data: Path) -> Path:
 def make_data_dir(folder: Path) -> Path:
     d = Path(folder) / DATA
     d.mkdir(parents=True, exist_ok=True)
-    _hide(d)
+    unhide(d)
     return d
 
 
-def _hide(path: Path) -> None:
-    """Hidden on Windows, like .git: the project folder shows the .bapu file and the exports."""
+def unhide(path: Path) -> None:
+    """The data folder is a normal, visible folder (the user asked for it; earlier builds hid it)."""
     if sys.platform == "win32":
         import ctypes
 
         attrs = ctypes.windll.kernel32.GetFileAttributesW(str(path))
-        if attrs != -1 and not attrs & 0x2:
-            ctypes.windll.kernel32.SetFileAttributesW(str(path), attrs | 0x2)  # FILE_ATTRIBUTE_HIDDEN
+        if attrs != -1 and attrs & 0x2:
+            ctypes.windll.kernel32.SetFileAttributesW(str(path), attrs & ~0x2)  # clear FILE_ATTRIBUTE_HIDDEN
 
 
 def _rel(folder: Path, p: Path) -> str:
@@ -128,6 +128,14 @@ def read(folder: Path) -> dict[str, Any]:
             meta["sources"] = {n: s["path"] for n, s in srcs.items()}
             if "source" in meta["sources"]:
                 meta["name"] = Path(meta["sources"]["source"]).stem
+        inputs = data_dir(folder) / "inputs"
+        if not meta.get("sources") and inputs.is_dir():  # never run: the copied inputs tell what it was
+            files = sorted(f for f in inputs.iterdir() if f.is_file())
+            lyrics = [f for f in files if f.suffix.lower() in (".ass", ".ssa", ".lrc", ".txt")]
+            audio = [f for f in files if f not in lyrics]
+            meta["sources"] = {k: str(v[0]) for k, v in (("source", audio), ("lyrics", lyrics)) if v}
+            if audio:
+                meta["name"] = audio[0].stem
     meta["sources"] = {n: str((folder / p).resolve()) for n, p in (meta.get("sources") or {}).items()}
     meta.setdefault("name", folder.name)
     return meta
@@ -156,6 +164,8 @@ def migrate(folder: Path) -> bool:
     folder = Path(folder)
     meta = read(folder)
     moved = False
+    if (folder / DATA).is_dir():
+        unhide(folder / DATA)
     if not (folder / DATA).is_dir() and _legacy_markers(folder):
         data = make_data_dir(folder)
         names = [n for n in _STATE_FILES if (folder / n).exists()]
@@ -188,6 +198,35 @@ def ensure(folder: Path) -> Path:
     """Give an older project folder its `.bapu` file and the current layout."""
     migrate(folder)
     return project_file(folder)  # type: ignore[return-value]
+
+
+def leftover(folder: Path) -> bool:
+    """`.bapu/` without a project file: the user moved or deleted the .bapu file."""
+    folder = Path(folder)
+    return project_file(folder) is None and not _legacy_markers(folder) and (folder / DATA).is_dir()
+
+
+def take_over_leftover(folder: Path, audio: Path) -> str:
+    """Before a new project goes into a folder with leftover `.bapu/`: keep it
+    when it was made from the same audio (its finished steps stay valid), else
+    set it aside as `.bapu-old-<time>/` (nothing is deleted).
+    Returns "reused" or "set_aside"."""
+    from bapu.audio import sha256_file
+
+    folder = Path(folder)
+    data = folder / DATA
+    manifest = data / "manifest.json"
+    same = False
+    if manifest.exists():
+        try:
+            src = (json.loads(manifest.read_text(encoding="utf-8")).get("sources") or {}).get("source") or {}
+            same = src.get("sha256") == sha256_file(Path(audio))
+        except (ValueError, OSError):
+            same = False
+    if same:
+        return "reused"
+    data.rename(folder / f"{DATA}-old-{time.strftime('%Y%m%d-%H%M%S')}")
+    return "set_aside"
 
 
 def copy_input(folder: Path, src: Path) -> Path:

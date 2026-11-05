@@ -493,52 +493,25 @@ def desktop_app() -> Path | None:
 @main.command()
 @click.option("--remove", is_flag=True, help="取消关联")
 def register(remove: bool) -> None:
-    """让双击 .bapu 文件时用 Bapu 打开（只改当前用户的文件关联，不需要管理员权限）。"""
-    if sys.platform != "win32":
+    """（可选）让双击 .bapu 文件时用 Bapu 打开。只改当前用户的文件关联，随时可以 --remove。
+    便携版不需要它：也可以在 Windows 的“打开方式”里选 Bapu.exe，或者在应用的“环境”页打开。"""
+    from bapu import assoc
+
+    if not assoc.supported():
         raise click.ClickException("目前只支持 Windows")
-    import ctypes
-    import winreg
-
-    classes = r"Software\Classes"
-    prog = "Bapu.Project"
-
-    def delete_tree(key: str) -> None:
-        try:
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key, 0, winreg.KEY_ALL_ACCESS) as k:
-                while True:
-                    try:
-                        delete_tree(f"{key}\\{winreg.EnumKey(k, 0)}")
-                    except OSError:
-                        break
-            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key)
-        except FileNotFoundError:
-            pass
-
     if remove:
-        delete_tree(f"{classes}\\{project.EXT}")
-        delete_tree(f"{classes}\\{prog}")
+        assoc.remove()
         click.echo("已取消 .bapu 的关联。")
-    else:
-        app = desktop_app()
-        if app is not None:  # the desktop window (desktop/, `npm run build`)
-            command, icon = f'"{app}" "%1"', f'"{app}",0'
-        else:  # no desktop build: open in the browser
-            pyw = Path(sys.executable).with_name("pythonw.exe")
-            exe = pyw if pyw.exists() else Path(sys.executable)
-            command, icon = f'"{exe}" -m bapu.cli open "%1"', None
-        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, f"{classes}\\{project.EXT}") as k:
-            winreg.SetValue(k, "", winreg.REG_SZ, prog)
-        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, f"{classes}\\{prog}") as k:
-            winreg.SetValue(k, "", winreg.REG_SZ, "Bapu 工程")
-        if icon:
-            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, f"{classes}\\{prog}\\DefaultIcon") as k:
-                winreg.SetValue(k, "", winreg.REG_SZ, icon)
-        else:
-            delete_tree(f"{classes}\\{prog}\\DefaultIcon")
-        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, f"{classes}\\{prog}\\shell\\open\\command") as k:
-            winreg.SetValue(k, "", winreg.REG_SZ, command)
-        click.echo(f"已关联 .bapu：双击会运行 {command}")
-    ctypes.windll.shell32.SHChangeNotify(0x08000000, 0, None, None)  # SHCNE_ASSOCCHANGED
+        return
+    app = desktop_app()
+    if app is not None:  # the desktop window (desktop/, `npm run build`)
+        command = assoc.associate_app(app)
+    else:  # no desktop build: open in the browser
+        pyw = Path(sys.executable).with_name("pythonw.exe")
+        exe = pyw if pyw.exists() else Path(sys.executable)
+        command = f'"{exe}" -m bapu.cli open "%1"'
+        assoc.associate(command)
+    click.echo(f"已关联 .bapu：双击会运行 {command}")
 
 
 if __name__ == "__main__":

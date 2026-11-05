@@ -47,10 +47,9 @@ def run_model(
         del sep
         gc.collect()
         try:
-            import torch
+            from bapu.device import empty_cache, pick
 
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            empty_cache(pick())
         except ImportError:
             pass
 

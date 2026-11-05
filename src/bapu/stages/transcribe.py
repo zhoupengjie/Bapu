@@ -53,7 +53,7 @@ def run_some(ctx: StageContext, wav: Path) -> tuple[int, list[dict[str, Any]]]:
     ctx.progress(f"载入 {spec.name}", 0.0)
     with open(log, "w", encoding="utf-8") as errf:
         proc = subprocess.Popen(
-            [sys.executable, "-I", "-m", "bapu.backends.some_worker", str(args)],
+            [sys.executable, "-P", "-m", "bapu.backends.some_worker", str(args)],
             stdout=subprocess.PIPE, stderr=errf, text=True, encoding="utf-8",
         )
         assert proc.stdout is not None

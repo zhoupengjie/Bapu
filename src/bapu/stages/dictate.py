@@ -65,7 +65,7 @@ def _run(ctx: StageContext) -> StageResult:
     log = ctx.out_dir / "asr.log"
     ctx.progress(f"载入 {spec.name}", 0.0)
     with open(log, "w", encoding="utf-8") as errf:
-        proc = subprocess.Popen([sys.executable, "-I", "-m", "bapu.backends.qwen_asr_worker", str(args)],
+        proc = subprocess.Popen([sys.executable, "-P", "-m", "bapu.backends.qwen_asr_worker", str(args)],
                                 stdout=subprocess.PIPE, stderr=errf, text=True, encoding="utf-8")
         assert proc.stdout is not None
         try:

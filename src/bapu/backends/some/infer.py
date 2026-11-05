@@ -173,7 +173,11 @@ class SomeTranscriber:
         ckpt = Path(ckpt)
         self.config = yaml.safe_load(ckpt.with_name("config.yaml").read_text(encoding="utf-8"))
         c = self.config
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        if device is None:
+            from bapu.device import pick
+
+            device = pick()
+        self.device = device
         self.sr = int(c["audio_sample_rate"])
         self.timestep = c["hop_size"] / c["audio_sample_rate"]
         self.model = MidiConforms(c).eval().to(self.device)

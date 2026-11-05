@@ -137,7 +137,7 @@ def test_archive_files_found_by_name(tmp_path, blobs):
     spec = reg.get("z")
     reg.pull(spec, accept_license=True)
     assert reg.status(spec) == "ready"
-    assert not list((tmp_path / "cache" / "downloads").glob("*.part"))
+    assert not list((tmp_path / "cache" / "models" / ".downloads").glob("*.part"))
 
 
 def test_archive_with_unsafe_path_is_refused(tmp_path, blobs):

@@ -21,7 +21,10 @@ def main() -> None:
 
     sr = 16000
     y, _ = read_mono(pathlib.Path(args["wav"]), sr)
-    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    from bapu.device import pick
+
+    device = pick()
+    device = "cuda:0" if device == "cuda" else device
     dtype = torch.bfloat16 if device != "cpu" else torch.float32
     model = Qwen3ASRModel.from_pretrained(args["model_dir"], dtype=dtype, device_map=device, max_new_tokens=256)
     print(f"BAPU device {device}", flush=True)

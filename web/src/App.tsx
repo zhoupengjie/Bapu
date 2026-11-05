@@ -1,13 +1,15 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
-import { api, fmtSize, type JobDetail, type JobSummary, type SystemInfo } from "./api";
+import { api, fmtSize, type JobDetail, type JobSummary, type Model, type StageInfo, type SystemInfo } from "./api";
 import { AudioStep, LangStep, LyricsStep } from "./pages/SetupSteps";
+import { EnvStep } from "./pages/EnvStep";
+import { isMissing, neededModels } from "./components/Models";
 import RunPage from "./pages/RunPage";
 import ReviewPage from "./pages/ReviewPage";
 import ExportPage from "./pages/ExportPage";
 
 /** One song at a time: the steps of the flow are the routes (#/audio … #/export). */
-export type Step = "audio" | "lyrics" | "lang" | "run" | "review" | "export";
-const STEP_ORDER: Step[] = ["audio", "lyrics", "lang", "run", "review", "export"];
+export type Step = "env" | "audio" | "lyrics" | "lang" | "run" | "review" | "export";
+const STEP_ORDER: Step[] = ["env", "audio", "lyrics", "lang", "run", "review", "export"];
 
 export const go = (step: Step) => {
   window.location.hash = `/${step}`;
@@ -27,8 +29,11 @@ function useStep(): Step | null {
   return step;
 }
 
-type Ctx = { job: JobDetail | null; refresh: () => Promise<JobDetail | null>; open: (id: string | null) => void };
-const JobContext = createContext<Ctx>({ job: null, refresh: async () => null, open: () => {} });
+type Ctx = {
+  job: JobDetail | null; refresh: () => Promise<JobDetail | null>; open: (id: string | null) => void;
+  envReady: boolean | null; refreshEnv: () => void; // every model the pipeline needs is on disk
+};
+const JobContext = createContext<Ctx>({ job: null, refresh: async () => null, open: () => {}, envReady: null, refreshEnv: () => {} });
 export const useJob = () => useContext(JobContext);
 
 const KEY = "bapu.job";
@@ -53,11 +58,18 @@ export const started = (job: JobDetail) =>
 
 type StepView = { step: Step; title: string; status: string; state: "done" | "now" | "warn" | "todo" | "locked" };
 
-function steps(job: JobDetail | null): StepView[] {
+function steps(job: JobDetail | null, envReady: boolean | null): StepView[] {
+  const env: StepView = envReady === false
+    ? { step: "env", title: "环境", status: "要下载模型", state: "warn" }
+    : { step: "env", title: "环境", status: envReady ? "已就绪" : "", state: envReady ? "done" : "todo" };
+  return [env, ...projectSteps(job, envReady !== false)];
+}
+
+function projectSteps(job: JobDetail | null, envOk: boolean): StepView[] {
   const LANG: Record<string, string> = { yue: "粤语", zh: "普通话", en: "英语" };
   if (!job) {
     return [
-      { step: "audio", title: "原曲", status: "导入录音", state: "todo" },
+      { step: "audio", title: "原曲", status: "导入录音", state: envOk ? "todo" : "locked" },
       { step: "lyrics", title: "参考歌词", status: "可选", state: "locked" },
       { step: "lang", title: "语言", status: "", state: "locked" },
       { step: "run", title: "自动处理", status: "", state: "locked" },
@@ -98,10 +110,10 @@ function steps(job: JobDetail | null): StepView[] {
   ];
 }
 
-function Stepper({ job, current }: { job: JobDetail | null; current: Step }) {
+function Stepper({ job, envReady, current }: { job: JobDetail | null; envReady: boolean | null; current: Step }) {
   return (
     <nav className="flow" aria-label="步骤">
-      {steps(job).map((s, i) => {
+      {steps(job, envReady).map((s, i) => {
         const on = s.step === current;
         const inner = (
           <>
@@ -145,6 +157,13 @@ export default function App() {
   const routed = useStep();
   const [jobId, setJobId] = useState<string | null | undefined>(undefined); // undefined: still looking
   const [job, setJob] = useState<JobDetail | null>(null);
+  const [envReady, setEnvReady] = useState<boolean | null>(null);
+  const refreshEnv = useCallback(() => {
+    Promise.all([api.get<Model[]>("/models"), api.get<StageInfo[]>("/stages")])
+      .then(([m, s]) => setEnvReady(!neededModels(s, m).some(isMissing)))
+      .catch(() => setEnvReady(true)); // cannot tell: do not block the flow
+  }, []);
+  useEffect(refreshEnv, [refreshEnv]);
 
   // the job to show: #/p/<id> (from "bapu open"), else the one opened last in this browser, else the newest one
   useEffect(() => {
@@ -205,16 +224,17 @@ export default function App() {
     return () => window.removeEventListener("hashchange", on);
   }, [open]);
 
-  if (jobId === undefined) return <Header job={null} onNew={() => {}} />;
+  if (jobId === undefined || envReady === null) return <Header job={null} onNew={() => {}} />;
   if (jobId && !job) return <Header job={null} onNew={() => {}} />;
 
   // with no route, land where the song is: setup, processing or review
-  const step: Step = routed ?? (!job ? "audio" : job.has_score && job.state !== "running" ? "review" : started(job) ? "run" : "lyrics");
-  const blocked = (s: Step) => steps(job).find((x) => x.step === s)?.state === "locked";
-  const shown: Step = blocked(step) ? (job ? "run" : "audio") : step;
+  const step: Step = routed ?? (envReady === false ? "env" : !job ? "audio" : job.has_score && job.state !== "running" ? "review" : started(job) ? "run" : "lyrics");
+  const blocked = (s: Step) => steps(job, envReady).find((x) => x.step === s)?.state === "locked";
+  const shown: Step = blocked(step) ? (job ? "run" : envReady === false ? "env" : "audio") : step;
 
   let page;
-  if (shown === "audio") page = <AudioStep />;
+  if (shown === "env") page = <EnvStep />;
+  else if (shown === "audio") page = <AudioStep />;
   else if (shown === "lyrics") page = <LyricsStep />;
   else if (shown === "lang") page = <LangStep />;
   else if (shown === "run") page = <RunPage />;
@@ -222,14 +242,14 @@ export default function App() {
   else page = <ExportPage key={job!.id} id={job!.id} />;
 
   return (
-    <JobContext.Provider value={{ job, refresh, open }}>
+    <JobContext.Provider value={{ job, refresh, open, envReady, refreshEnv }}>
       <Header job={job} onNew={() => {
         if (job?.state === "running" && !window.confirm("这个工程还在处理，离开后它会在后台继续跑完。确定吗？")) return;
         open(null);
         go("audio");
       }} />
       <main className="page">
-        <Stepper job={job} current={shown} />
+        <Stepper job={job} envReady={envReady} current={shown} />
         {page}
       </main>
     </JobContext.Provider>

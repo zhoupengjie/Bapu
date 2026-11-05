@@ -30,7 +30,7 @@ it records the validated pipeline, parameters, measured results and pitfalls.
 - `uv sync`; Python 3.12; torch/torchaudio/torchvision 2.11 / 0.26 from the
   CUDA 12.8 index (RTX 50-series). Resolution is limited to win32 and
   linux x86_64 in `pyproject.toml`.
-- Set `TORCH_HOME=.cache/torch` for the MMS aligner, pass
+- The MMS aligner's torch hub lives in `.cache/models/torch` (the align stage sets it), pass
   `.cache/models/audio-separator` as audio-separator's model dir, and use
   `.cache/models/some/0119_continuous256_5spk/` for SOME.
 - torchaudio 2.11 `load()` needs torchcodec; read audio with soundfile + soxr.

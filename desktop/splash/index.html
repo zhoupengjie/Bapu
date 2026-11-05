@@ -5,32 +5,180 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Bapu 扒谱</title>
 <style>
-  :root { --bg: #f3f5f8; --ink: #18202b; --muted: #5b6675; --accent: #2457d6; --bad: #9b1c1c; color-scheme: light dark; }
-  @media (prefers-color-scheme: dark) { :root { --bg: #11151b; --ink: #e6eaf0; --muted: #9aa5b4; --accent: #6f9bff; --bad: #f3a0a0; } }
+  :root { --bg: #f3f5f8; --surface: #fff; --surface-2: #f7f8fa; --border: #dde2e9; --ink: #18202b; --muted: #5b6675;
+    --accent: #2457d6; --accent-soft: #e8eefc; --ok: #14532d; --warn: #9a3412; --warn-soft: #fdf1e4; --bad: #9b1c1c; color-scheme: light dark; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #11151b; --surface: #1a2029; --surface-2: #202834; --border: #2c3542; --ink: #e6eaf0;
+    --muted: #9aa5b4; --accent: #6f9bff; --accent-soft: #1f2c4a; --ok: #86d6a0; --warn: #f5b27a; --warn-soft: #3a2616; --bad: #f3a0a0; } }
+  * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
   body { background: var(--bg); color: var(--ink); font-family: "Noto Sans SC", system-ui, "Segoe UI", sans-serif;
-    display: flex; align-items: center; justify-content: center; }
-  .box { display: flex; flex-direction: column; align-items: center; gap: 16px; max-width: 560px; padding: 24px; text-align: center; }
-  b { font-size: 28px; }
+    display: flex; align-items: center; justify-content: center; padding: 24px; }
+  .box { display: flex; flex-direction: column; align-items: center; gap: 16px; max-width: 560px; text-align: center; }
+  .brand { font-size: 28px; font-weight: 700; }
   .spin { width: 28px; height: 28px; border-radius: 50%; border: 3px solid var(--accent); border-right-color: transparent; animation: spin .8s linear infinite; }
+  .spin.small { width: 14px; height: 14px; border-width: 2px; display: inline-block; vertical-align: -2px; margin-right: 8px; }
   @keyframes spin { to { transform: rotate(360deg); } }
+  .muted { color: var(--muted); }
+  .small { font-size: 13px; }
+  .mono { font-family: "JetBrains Mono", ui-monospace, Consolas, monospace; }
   #msg { color: var(--muted); font-size: 14px; line-height: 1.6; white-space: pre-wrap; }
   .error #msg { color: var(--bad); }
   .error .spin { display: none; }
+  .card { width: min(720px, 100%); background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 28px;
+    display: flex; flex-direction: column; gap: 16px; text-align: left; }
+  h1 { margin: 0; font-size: 22px; }
+  p { margin: 0; line-height: 1.6; }
+  .opts { display: flex; flex-direction: column; gap: 10px; }
+  .opt { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; }
+  .opt:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+  .opt.off { opacity: .5; cursor: not-allowed; }
+  .opt input { margin-top: 4px; }
+  .opt b { font-weight: 500; }
+  .badge { display: inline-block; font-size: 12px; padding: 1px 8px; border-radius: 999px; background: var(--surface-2); color: var(--muted); margin-left: 6px; }
+  .badge.rec { background: var(--accent-soft); color: var(--accent); }
+  .badge.exp { background: var(--warn-soft); color: var(--warn); }
+  .note { font-size: 13px; color: var(--warn); }
+  .notice { padding: 10px 12px; border-radius: 8px; background: var(--warn-soft); font-size: 14px; }
+  .notice.bad { color: var(--bad); }
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+  button { font: inherit; font-size: 14px; font-weight: 500; padding: 9px 18px; border-radius: 6px; border: 1px solid var(--accent);
+    background: var(--accent); color: #fff; cursor: pointer; min-height: 40px; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .bar { height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: var(--accent); transition: width .4s; }
+  pre { margin: 0; padding: 12px; background: #18202b; color: #dce3ec; border-radius: 8px; font-size: 12px; line-height: 1.6;
+    height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .hidden { display: none !important; }
 </style>
 </head>
 <body>
   <div class="box" id="box">
-    <b>Bapu 扒谱</b>
+    <div class="brand">Bapu 扒谱</div>
     <div class="spin" aria-hidden="true"></div>
-    <div id="msg">正在启动本机服务…</div>
+    <div id="msg">正在启动…</div>
   </div>
-  <script>
-    // called by the desktop shell when the service cannot start
-    window.showError = (text) => {
-      document.getElementById("box").classList.add("error");
-      document.getElementById("msg").textContent = text;
-    };
-  </script>
+
+  <section class="card hidden" id="setup" aria-labelledby="h-setup">
+    <h1 id="h-setup">第一次使用：准备运行环境</h1>
+    <p class="muted">Bapu 会在程序文件夹里装一份自己用的 Python 和推理用的包。不改系统设置，不写注册表，也不碰你电脑上已有的 Python；
+      以后不想用了，删掉整个程序文件夹就行。</p>
+    <p class="small">安装位置：<span class="mono" id="where"></span></p>
+    <div class="notice bad hidden" id="not-writable">这个文件夹没有写入权限。请把 Bapu 放到可以写入的位置（比如 D:\Apps\Bapu），不要放在 C:\Program Files 里。</div>
+    <div>
+      <div class="small muted" style="margin-bottom:8px">检测到的显卡：<span id="gpus"></span></div>
+      <div class="opts" id="opts" role="radiogroup" aria-label="推理用的设备"></div>
+      <p class="note hidden" id="amd" style="margin-top:8px">检测到 AMD 显卡：暂时只能用 CPU（AMD 的 GPU 支持还在做）。</p>
+    </div>
+    <div class="row">
+      <span class="small muted" id="size"></span>
+      <button type="button" id="go">开始安装</button>
+    </div>
+  </section>
+
+  <section class="card hidden" id="install" aria-labelledby="h-install">
+    <div class="row"><h1 id="h-install"><span class="spin small" id="ispin"></span><span id="ititle">正在安装…</span></h1><span class="small muted mono" id="istep"></span></div>
+    <div class="bar"><i id="ibar" style="width:2%"></i></div>
+    <p class="small muted">需要联网下载，时间取决于网速，PyTorch 那一步最久。关掉窗口会中断，下次启动要重新装。</p>
+    <pre id="log" aria-live="polite"></pre>
+    <div class="notice bad hidden" id="ierr"></div>
+    <div class="row hidden" id="retry-row"><span class="small muted" id="logpath"></span><button type="button" id="retry">重试</button></div>
+  </section>
+
+<script>
+  // called by the desktop shell when the service cannot start
+  window.showError = (text) => {
+    document.getElementById("setup").classList.add("hidden");
+    document.getElementById("install").classList.add("hidden");
+    const box = document.getElementById("box");
+    box.classList.remove("hidden");
+    box.classList.add("error");
+    document.getElementById("msg").textContent = text;
+  };
+
+  const T = window.__TAURI__;
+  const $ = (id) => document.getElementById(id);
+  let chosen = null;
+
+  function renderSetup(info) {
+    $("box").classList.add("hidden");
+    $("setup").classList.remove("hidden");
+    $("where").textContent = info.home + "\\runtime";
+    $("not-writable").classList.toggle("hidden", info.writable);
+    const names = [...info.nvidia.map((g) => `${g.name}（驱动 ${g.driver ?? "?"}）`), ...info.adapters.filter((a) => !info.nvidia.some((g) => a.includes(g.name)))];
+    $("gpus").textContent = names.length ? names.join("、") : "没有检测到";
+    $("amd").classList.toggle("hidden", !info.amd);
+    const opts = $("opts");
+    opts.innerHTML = "";
+    const order = ["cuda", "xpu", "cpu"];
+    info.variants.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id)).forEach((v) => {
+      const label = document.createElement("label");
+      label.className = "opt" + (v.available ? "" : " off");
+      label.innerHTML = `<input type="radio" name="variant" value="${v.id}" ${v.available ? "" : "disabled"} ${v.id === info.recommended ? "checked" : ""}>
+        <span><b></b>${v.recommended ? '<span class="badge rec">推荐</span>' : ""}${v.experimental ? '<span class="badge exp">实验</span>' : ""}
+        <div class="small muted"></div>${v.note ? '<div class="note"></div>' : ""}</span>`;
+      label.querySelector("b").textContent = v.label;
+      label.querySelector(".small").textContent = `${v.detail} · 下载约 ${v.size_gb} GB`;
+      if (v.note) label.querySelector(".note").textContent = v.note;
+      label.querySelector("input").addEventListener("change", () => pick(v));
+      opts.appendChild(label);
+      if (v.id === info.recommended) pick(v);
+    });
+    $("go").disabled = !info.writable || !chosen;
+  }
+
+  function pick(v) {
+    chosen = v.id;
+    $("size").textContent = `需要联网下载约 ${v.size_gb} GB，装好后约占 ${Math.round(v.size_gb * 1.6 * 10) / 10} GB。模型之后在“环境”页另外下载。`;
+    $("go").disabled = false;
+  }
+
+  async function install() {
+    $("setup").classList.add("hidden");
+    $("install").classList.remove("hidden");
+    $("ierr").classList.add("hidden");
+    $("retry-row").classList.add("hidden");
+    $("ispin").classList.remove("hidden");
+    $("ititle").textContent = "正在安装…";
+    try {
+      await T.core.invoke("setup_install", { variant: chosen });
+    } catch (e) {
+      failed({ message: String(e), log: "" });
+    }
+  }
+
+  function failed(p) {
+    $("ispin").classList.add("hidden");
+    $("ititle").textContent = "安装没有成功";
+    $("ierr").textContent = p.message;
+    $("ierr").classList.remove("hidden");
+    $("logpath").textContent = p.log ? `完整日志：${p.log}` : "";
+    $("retry-row").classList.remove("hidden");
+  }
+
+  async function main() {
+    if (!T) return; // opened outside the desktop shell
+    const log = $("log");
+    await T.event.listen("setup-log", (e) => {
+      log.textContent = (log.textContent + e.payload + "\n").split("\n").slice(-400).join("\n");
+      log.scrollTop = log.scrollHeight;
+    });
+    await T.event.listen("setup-step", (e) => {
+      const { index, total, title } = e.payload;
+      $("ititle").textContent = title + "…";
+      $("istep").textContent = `第 ${index}/${total} 步`;
+      $("ibar").style.width = `${((index - 1) / total) * 100 + 4}%`;
+    });
+    await T.event.listen("setup-done", (e) => {
+      $("ibar").style.width = "100%";
+      $("ititle").textContent = `装好了：${e.payload.device?.name ?? ""}，正在启动…`;
+    });
+    await T.event.listen("setup-error", (e) => failed(e.payload));
+    $("go").addEventListener("click", install);
+    $("retry").addEventListener("click", install);
+    const boot = await T.core.invoke("boot");
+    if (boot.setup) renderSetup(boot.info);
+  }
+  main().catch((e) => window.showError(String(e)));
+</script>
 </body>
 </html>
