@@ -10,6 +10,7 @@ the original address is always tried as a fallback.
 from __future__ import annotations
 
 import json
+import sys
 import time
 import urllib.request
 from importlib.resources import files as pkg_files
@@ -101,7 +102,8 @@ def _speed(url: str, nbytes: int = 512 * 1024, timeout: float = 8.0) -> float | 
 
 def measure() -> dict[str, Any]:
     """Time the official servers and the mirrors; remember which is faster."""
-    probe = table()["probe"]
+    t = table()
+    probe = t.get("probe_macos", t["probe"]) if sys.platform == "darwin" else t["probe"]
     speeds = {k: _speed(probe[k]) for k in ("official", "china")}
     o, c = speeds["official"], speeds["china"]
     best = "china" if (c and (not o or c > o * 1.2)) else "official"

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type DragEvent } from "react";
 import { ApiError, api, type JobDetail } from "../api";
 import { go, started, useJob } from "../App";
 import { desktopPick, onDesktopDrop } from "../desktop";
+import { t } from "../i18n";
 import { Icon } from "../icons";
 
 /** A picked input: a real path (system dialog, desktop drop) or a file dropped into the page. */
@@ -193,7 +194,7 @@ export default function ImportPage() {
   });
 
   const newProject = () => {
-    if (job?.state === "running" && !window.confirm("这个工程还在处理，离开后它会在后台继续跑完。确定吗？")) return;
+    if (job?.state === "running" && !window.confirm(t("这个工程还在处理，离开后它会在后台继续跑完。确定吗？"))) return;
     open(null);
     go("import");
   };
@@ -210,12 +211,12 @@ export default function ImportPage() {
   return (
     <section className="card narrow" aria-labelledby="h-import">
       <div>
-        <h1 id="h-import">导入</h1>
-        <p className="lead">原曲、歌词、语言，选好就能开始</p>
+        <h1 id="h-import">{t("导入")}</h1>
+        <p className="lead">{t("原曲、歌词、语言，选好就能开始")}</p>
       </div>
 
       <div className="sec">
-        <h2>原曲</h2>
+        <h2>{t("原曲")}</h2>
         {audioFixed ? (
           <div className="drop filled">
             <span style={{ color: "var(--accent)" }}><Icon name="music" size={22} /></span>
@@ -225,13 +226,13 @@ export default function ImportPage() {
           <button type="button" className="drop filled" disabled={busy} onClick={() => browse("audio")} {...dropProps("audio")}>
             <span style={{ color: "var(--accent)" }}><Icon name="music" size={22} /></span>
             <span style={{ flex: 1, minWidth: 0, overflowWrap: "anywhere" }}><b style={{ fontWeight: 500 }}>{audio.name}</b></span>
-            <span className="link">换一个</span>
+            <span className="link">{t("换一个")}</span>
           </button>
         ) : (
           <button type="button" className="drop" disabled={busy} onClick={() => browse("audio")} {...dropProps("audio")}>
             <Icon name="down" size={26} />
-            <b style={{ fontWeight: 500 }}>选择文件，或拖进来</b>
-            <span className="muted" style={{ fontSize: 14 }}>WAV、MP3、MP4…</span>
+            <b style={{ fontWeight: 500 }}>{t("选择文件，或拖进来")}</b>
+            <span className="muted" style={{ fontSize: 14 }}>{t("WAV、MP3、MP4…")}</span>
           </button>
         )}
         <input ref={audioInput} type="file" accept={ACCEPT.audio} hidden onChange={(e) => {
@@ -242,19 +243,19 @@ export default function ImportPage() {
       </div>
 
       <div className="sec">
-        <h2>参考歌词 <span className="muted" style={{ fontWeight: 400, fontSize: 14 }}>· 可选</span></h2>
+        <h2>{t("参考歌词")} <span className="muted" style={{ fontWeight: 400, fontSize: 14 }}>· {t("可选")}</span></h2>
         {locked ? (
           <div className={`drop slim ${hasLyrics ? "filled" : ""}`}>
             {hasLyrics
-              ? <><span style={{ color: "var(--accent)" }}><Icon name="text" size={20} /></span><span style={{ flex: 1 }}>已导入歌词</span></>
-              : <><span className="muted"><Icon name="text" size={20} /></span><span style={{ flex: 1 }} className="muted">没有</span></>}
+              ? <><span style={{ color: "var(--accent)" }}><Icon name="text" size={20} /></span><span style={{ flex: 1 }}>{t("已导入歌词")}</span></>
+              : <><span className="muted"><Icon name="text" size={20} /></span><span style={{ flex: 1 }} className="muted">{t("没有")}</span></>}
           </div>
         ) : (
           <button type="button" className={`drop slim ${hasLyrics ? "filled" : ""}`} disabled={busy}
             onClick={() => browse("lyrics")} {...dropProps("lyrics")}>
             {hasLyrics
-              ? <><span style={{ color: "var(--accent)" }}><Icon name="text" size={20} /></span><span style={{ flex: 1 }}>已导入歌词</span><span className="link">换一个</span></>
-              : <><span className="muted"><Icon name="text" size={20} /></span><span style={{ flex: 1 }} className="muted">有歌词文件的话，用来校正听写的字</span><span className="link">选择</span></>}
+              ? <><span style={{ color: "var(--accent)" }}><Icon name="text" size={20} /></span><span style={{ flex: 1 }}>{t("已导入歌词")}</span><span className="link">{t("换一个")}</span></>
+              : <><span className="muted"><Icon name="text" size={20} /></span><span style={{ flex: 1 }} className="muted">{t("有歌词文件的话，用来校正听写的字")}</span><span className="link">{t("选择")}</span></>}
           </button>
         )}
         <input ref={lyricsInput} type="file" accept={ACCEPT.lyrics} hidden onChange={(e) => {
@@ -265,14 +266,14 @@ export default function ImportPage() {
       </div>
 
       <div className="sec">
-        <h2 id="h-langs">唱了哪些语言</h2>
+        <h2 id="h-langs">{t("唱了哪些语言")}</h2>
         <div className="choices" role="group" aria-labelledby="h-langs">
           {LANGS.map(([id, label]) => {
             const on = langs.includes(id);
             return (
               <button key={id} type="button" className={`choice ${on ? "on" : ""}`} aria-pressed={on}
                 disabled={locked || busy} onClick={() => toggle(id)}>
-                <span className="box" aria-hidden="true">{on ? "✓" : ""}</span>{label}
+                <span className="box" aria-hidden="true">{on ? "✓" : ""}</span>{t(label)}
               </button>
             );
           })}
@@ -281,22 +282,22 @@ export default function ImportPage() {
 
       {taken && (
         <div className="notice" style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", justifyContent: "space-between" }}>
-          <span>这首歌已经有工程了</span>
+          <span>{t("这首歌已经有工程了")}</span>
           <span style={{ display: "flex", gap: 8 }}>
-            <button type="button" className="btn" disabled={busy} onClick={openTaken}>打开它</button>
-            <button type="button" className="btn" disabled={busy} onClick={another}>另建一个</button>
+            <button type="button" className="btn" disabled={busy} onClick={openTaken}>{t("打开它")}</button>
+            <button type="button" className="btn" disabled={busy} onClick={another}>{t("另建一个")}</button>
           </span>
         </div>
       )}
-      {error && <div className="notice bad" role="alert">{error}</div>}
+      {error && <div className="notice bad" role="alert">{t(error)}</div>}
 
       <div className="foot">
         <span />
         {locked ? (
-          <button type="button" className="btn primary" onClick={newProject}>新建工程</button>
+          <button type="button" className="btn primary" onClick={newProject}>{t("新建工程")}</button>
         ) : (
           <button type="button" className="btn primary" disabled={busy || (!job && !audio)} onClick={start}>
-            {busy && <span className="spin inline" aria-hidden="true" />}开始处理
+            {busy && <span className="spin inline" aria-hidden="true" />}{t("开始处理")}
           </button>
         )}
       </div>

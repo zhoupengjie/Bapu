@@ -23,7 +23,9 @@ def pick() -> str:
     if getattr(torch, "xpu", None) is not None and torch.xpu.is_available():
         return "xpu"
     if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
-        os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")  # ops MPS lacks run on the CPU
+        # ops MPS lacks run on the CPU; torch reads this when it starts, so the desktop shell sets it
+        # for the service, and model workers (new processes) inherit it from here too
+        os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
         return "mps"
     return "cpu"
 

@@ -39,7 +39,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .shell { display: grid; grid-template-columns: 248px minmax(0, 1fr); min-height: 100%; }
 aside.side { background: var(--side); padding: 16px 12px; padding-left: max(12px, env(safe-area-inset-left, 0px)); display: flex; flex-direction: column; gap: 2px; position: sticky; top: 0; height: 100vh; overflow-y: auto; }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 650; font-size: 17px; letter-spacing: -.01em; padding: 2px 6px 14px; }
-.brand .icon-btn { margin-left: auto; width: 30px; height: 30px; background: transparent; color: var(--muted); }
+.brand .icon-btn { width: 30px; height: 30px; background: transparent; color: var(--muted); }
 .brand .icon-btn:hover { background: var(--side-hover); color: var(--ink); }
 .logo { width: 28px; height: 28px; border-radius: 8px; background: var(--accent); display: grid; place-items: center; flex: none; }
 .nav { border: 0; background: transparent; border-radius: var(--r-sm); padding: 7px 10px; display: flex; align-items: center; gap: 10px; text-align: left; width: 100%; min-width: 0; color: var(--ink); transition: background .12s; }
@@ -201,3 +201,9 @@ input, select, textarea { font: inherit; color: inherit; }
 :root[data-theme="dark"] { --border-strong: #34343d; }
 .logo img { display: block; }
 .drop.over { border-color: var(--accent); }
+
+.lang-btn { font-size: 12px; font-weight: 600; }
+/* English labels are longer */
+html[lang="en"] .dl { grid-template-columns: 18px 128px minmax(0, 1fr) 200px; }
+html[lang="en"] .row .k { width: 128px; }
+@media (max-width: 600px) { html[lang="en"] .dl { grid-template-columns: 18px minmax(0, 1fr) auto; } }

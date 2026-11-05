@@ -3,7 +3,8 @@
 //!
 //! 1. Python 3.12 (uv's standalone build, relocatable; not on PATH, not in the registry)
 //! 2. Bapu's packages, pinned from uv.lock (`app\requirements.txt`, no dependency resolution)
-//! 3. PyTorch for the chosen device (`app\torch.json`: CUDA, CPU, Intel XPU)
+//! 3. PyTorch for the chosen device (`app\torch.json`: CUDA, AMD ROCm, CPU, Intel XPU;
+//!    on macOS Apple chips with Metal (MPS), or CPU, both PyPI's own build)
 //! 4. a check that imports torch and Bapu and reports the device
 //!
 //! Packages go straight into that Python (no venv: a venv records absolute
@@ -74,7 +75,10 @@ fn is_junction(p: &Path) -> bool {
         return fs::symlink_metadata(p).is_ok_and(|m| m.file_attributes() & REPARSE_POINT != 0);
     }
     #[allow(unreachable_code)]
-    false
+    {
+        let _ = p;
+        false
+    }
 }
 
 fn quiet(cmd: &mut Command) -> &mut Command {
@@ -115,10 +119,65 @@ fn gpus() -> (Vec<(String, Option<u32>)>, Vec<String>) {
     (nvidia, all)
 }
 
+/// The Mac's chip ("Apple M2 Pro"); None on other systems and on Intel Macs.
+fn apple_chip() -> Option<String> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    output("/usr/sbin/sysctl", &["-n", "machdep.cpu.brand_string"])
+        .map(|s| s.trim().to_string())
+        .filter(|s| s.starts_with("Apple"))
+}
+
+/// Radeon cards (and Ryzen AI graphics) AMD's Windows PyTorch can run on: RDNA 3 / RDNA 4.
+fn amd_supported(name: &str) -> bool {
+    ["RX 9", "RX 7", "R9700", "W7900", "W7800", "W7700", "8060S", "8050S", "8040S", "890M", "880M"]
+        .iter().any(|p| name.contains(p))
+}
+
+/// The ones on AMD's own list (ROCm 7.2.1 support matrix and release notes).
+fn amd_listed(name: &str) -> bool {
+    ["RX 9070", "RX 9060", "R9700", "RX 7900 XTX", "W7900", "RX 7700", "8060S", "8050S", "890M", "880M"]
+        .iter().any(|p| name.contains(p))
+}
+
+/// Windows 11 is build 22000 or later (AMD's PyTorch is for Windows 11 only).
+fn windows_11() -> bool {
+    if !cfg!(windows) {
+        return false;
+    }
+    output("cmd", &["/c", "ver"])
+        .and_then(|v| v.rsplit('.').nth(1).and_then(|b| b.trim().parse::<u32>().ok()))
+        .is_some_and(|build| build >= 22000)
+}
+
+/// The torch / torchaudio / torchvision pins of a variant (AMD's build brings its own versions).
+fn pins(spec: &Value, variant: &str) -> Value {
+    let own = &spec["variants"][variant]["packages"];
+    if own.is_array() { own.clone() } else { spec["packages"].clone() }
+}
+
 fn torch_spec(home: &Path) -> Result<Value, String> {
     let p = home.join("app").join("torch.json");
     let text = fs::read_to_string(&p).map_err(|e| format!("读不了 {}：{e}", p.display()))?;
     serde_json::from_str(&text).map_err(|e| format!("{} 格式不对：{e}", p.display()))
+}
+
+/// Environment the runtime's Python needs besides PYTHONPATH, for `variant` (None: the installed one).
+/// A variant with a fixed `device` in torch.json gets BAPU_DEVICE (macOS 只用 CPU: the same PyPI
+/// build as Metal, which would otherwise pick Metal). macOS: `app` is a link into the signed app
+/// bundle, so bytecode goes to the runtime folder instead of next to the code (a file written into
+/// the bundle would break its signature), and ops Metal lacks run on the CPU (read when torch is imported).
+pub fn runtime_env(cmd: &mut Command, home: &Path, variant: Option<&str>) {
+    let variant = variant.map(str::to_string).or_else(|| read_ready(home)?["variant"].as_str().map(str::to_string));
+    let device = variant.and_then(|v| torch_spec(home).ok()?["variants"][v.as_str()]["device"].as_str().map(str::to_string));
+    if let Some(d) = device.filter(|_| std::env::var_os("BAPU_DEVICE").is_none()) {
+        cmd.env("BAPU_DEVICE", d);
+    }
+    if cfg!(target_os = "macos") {
+        cmd.env("PYTHONPYCACHEPREFIX", runtime(home).join("pycache"))
+            .env("PYTORCH_ENABLE_MPS_FALLBACK", "1");
+    }
 }
 
 fn writable(dir: &Path) -> bool {
@@ -133,15 +192,27 @@ pub fn info(home: &Path) -> Value {
     let (nvidia, all) = gpus();
     let spec = torch_spec(home).unwrap_or(json!({}));
     let has_intel_arc = all.iter().any(|n| n.contains("Intel") && (n.contains("Arc") || n.contains("Iris Xe")));
-    let has_amd = all.iter().any(|n| n.contains("AMD") || n.contains("Radeon"));
+    let amd: Vec<&String> = all.iter().filter(|n| n.contains("AMD") || n.contains("Radeon")).collect();
+    let has_amd = !amd.is_empty();
+    let amd_ok = amd.iter().any(|n| amd_supported(n));
+    let amd_on_list = amd.iter().any(|n| amd_listed(n));
+    let win11 = windows_11();
     let driver_ok = nvidia.iter().any(|(_, d)| d.is_some_and(|d| d >= 570));
-    let recommended = if driver_ok { "cuda" } else if has_intel_arc { "xpu" } else { "cpu" };
+    let apple = apple_chip();
+    let recommended = if cfg!(target_os = "macos") {
+        if apple.is_some() { "mps" } else { "cpu" }
+    } else if driver_ok { "cuda" } else if amd_ok && win11 { "rocm" } else if has_intel_arc { "xpu" } else { "cpu" };
     let mut variants = Vec::new();
     for (id, v) in spec["variants"].as_object().cloned().unwrap_or_default() {
         let (available, note) = match id.as_str() {
+            "mps" if apple.is_none() => (false, "只在 Apple 芯片的 Mac 上可用".to_string()),
             "cuda" if nvidia.is_empty() => (false, "没有检测到 NVIDIA 显卡".to_string()),
             "cuda" if !driver_ok => (true, "显卡驱动版本低于 570，CUDA 12.8 可能用不了，请先更新驱动".to_string()),
             "xpu" if !has_intel_arc => (false, "没有检测到 Intel Arc 显卡".to_string()),
+            "rocm" if !has_amd => (false, "没有检测到 AMD 显卡".to_string()),
+            "rocm" if !amd_ok => (false, "这张 AMD 显卡还用不了：AMD 的 Windows 版 PyTorch 只支持 RX 7000 / 9000 系列".to_string()),
+            "rocm" if !win11 => (false, "AMD 的 Windows 版 PyTorch 需要 Windows 11".to_string()),
+            "rocm" if !amd_on_list => (true, "这张显卡不在 AMD 官方的支持列表里，可能用不了".to_string()),
             _ => (true, String::new()),
         };
         variants.push(json!({
@@ -156,6 +227,8 @@ pub fn info(home: &Path) -> Value {
         "nvidia": nvidia.iter().map(|(n, d)| json!({"name": n, "driver": d})).collect::<Vec<_>>(),
         "adapters": all,
         "amd": has_amd,
+        "amd_supported": amd_ok && win11,
+        "apple": apple,
         "variants": variants,
         "recommended": recommended,
         "sources": mirrors(home).map(|m| json!({
@@ -285,7 +358,8 @@ fn read_ready(home: &Path) -> Option<Value> {
 pub fn needs_sync(home: &Path) -> bool {
     let Some(ready) = read_ready(home) else { return false };
     let req = sha256_file(&home.join("app").join("requirements.txt"));
-    let pins = torch_spec(home).ok().map(|s| s["packages"].clone());
+    let variant = ready["variant"].as_str().unwrap_or("cpu").to_string();
+    let pins = torch_spec(home).ok().map(|s| pins(&s, &variant));
     let pins_changed = ready.get("torch").is_some() && pins.as_ref() != Some(&ready["torch"]);
     req.is_some() && (ready["requirements_sha"].as_str() != req.as_deref() || pins_changed)
 }
@@ -317,9 +391,11 @@ fn speed(url: &str) -> Option<f64> {
 /// Official servers vs China mirrors: which is faster from here.
 pub fn probe(home: &Path) -> Value {
     let m = mirrors(home).unwrap_or(json!({}));
+    // macOS gets PyTorch from PyPI, so it times a PyPI file there
+    let probe = if cfg!(target_os = "macos") && m["probe_macos"].is_object() { &m["probe_macos"] } else { &m["probe"] };
     let (o, c) = thread::scope(|s| {
-        let a = s.spawn(|| speed(m["probe"]["official"].as_str().unwrap_or_default()));
-        let b = s.spawn(|| speed(m["probe"]["china"].as_str().unwrap_or_default()));
+        let a = s.spawn(|| speed(probe["official"].as_str().unwrap_or_default()));
+        let b = s.spawn(|| speed(probe["china"].as_str().unwrap_or_default()));
         (a.join().ok().flatten(), b.join().ok().flatten())
     });
     let best = match (o, c) {
@@ -339,7 +415,7 @@ fn steps(ctx: &Ctx, variant: &str, source: &str, sync: bool) -> Result<Value, St
     let before = read_ready(home);
     // a runtime set up before ready.json recorded the pins came from the same pins: leave torch alone
     let torch_changed = !sync || before.as_ref().map_or(true, |b| {
-        (b.get("torch").is_some() && b["torch"] != spec["packages"]) || b["variant"].as_str() != Some(variant)
+        (b.get("torch").is_some() && b["torch"] != pins(&spec, variant)) || b["variant"].as_str() != Some(variant)
     });
     let total = 4;
     let uv = || {
@@ -355,7 +431,13 @@ fn steps(ctx: &Ctx, variant: &str, source: &str, sync: bool) -> Result<Value, St
     if sync && runtime_python(home).is_some() {
         ctx.line("Python 已经装好，跳过");
     } else {
-        ctx.run(uv().args(["python", "install", py_version, "--no-bin", "--no-registry"]))?;
+        // --no-registry: Windows only (elsewhere there is no registry; UV_PYTHON_INSTALL_REGISTRY=0 as well)
+        let mut cmd = uv();
+        cmd.args(["python", "install", py_version, "--no-bin"]);
+        if cfg!(windows) {
+            cmd.arg("--no-registry");
+        }
+        ctx.run(&mut cmd)?;
     }
     // uv also makes `cpython-3.12-…`, a link to the patch release by absolute path; it would
     // dangle once the program folder moves, and Bapu does not need it
@@ -363,7 +445,8 @@ fn steps(ctx: &Ctx, variant: &str, source: &str, sync: bool) -> Result<Value, St
         for e in entries.flatten() {
             let p = e.path();
             if fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_symlink() || is_junction(&p)) {
-                let _ = fs::remove_dir(&p);
+                // a directory link / junction on Windows; a symlink elsewhere is unlinked like a file
+                let _ = if cfg!(windows) { fs::remove_dir(&p) } else { fs::remove_file(&p) };
             }
         }
     }
@@ -376,12 +459,34 @@ fn steps(ctx: &Ctx, variant: &str, source: &str, sync: bool) -> Result<Value, St
     ctx.run(uv().args(["pip", "install", "--python", &py_s, "--break-system-packages", "--no-deps", "--index-url", pypi, "-r"]).arg(&req))?;
 
     ctx.step(3, total, &format!("安装 PyTorch（{}）", v["label"].as_str().unwrap_or(variant)));
-    if torch_changed {
+    if torch_changed && v["wheels"].is_array() {
+        // AMD's build: direct links (no mirror), the ROCm SDK first, then torch; the SDK's small
+        // `rocm` source package is built with setuptools from the package index
+        for group in v["wheels"].as_array().cloned().unwrap_or_default() {
+            let mut cmd = uv();
+            cmd.args(["pip", "install", "--python", &py_s, "--break-system-packages", "--no-deps", "--index-url", pypi,
+                      "--reinstall-package", "torch"]);
+            for url in group.as_array().cloned().unwrap_or_default() {
+                cmd.arg(url.as_str().unwrap_or_default());
+            }
+            ctx.run(&mut cmd)?;
+        }
+    } else if torch_changed && v["from_pypi"].as_bool().unwrap_or(false) {
+        // macOS: the package index's own build (PyPI's wheels for Apple chips include Metal);
+        // the China source's PyPI mirror has the same files
+        let mut cmd = uv();
+        cmd.args(["pip", "install", "--python", &py_s, "--break-system-packages", "--reinstall-package", "torch",
+                  "--no-deps", "--index-url", pypi]);
+        for p in pins(&spec, variant).as_array().cloned().unwrap_or_default() {
+            cmd.arg(p.as_str().unwrap_or_default());
+        }
+        ctx.run(&mut cmd)?;
+    } else if torch_changed {
         let torch = &src["torch"];
         let url = torch[variant].as_str().ok_or_else(|| format!("{source} 没有 {variant} 的 PyTorch"))?;
         let mut cmd = uv();
         cmd.args(["pip", "install", "--python", &py_s, "--break-system-packages", "--reinstall-package", "torch"]);
-        for p in spec["packages"].as_array().cloned().unwrap_or_default() {
+        for p in pins(&spec, variant).as_array().cloned().unwrap_or_default() {
             cmd.arg(p.as_str().unwrap_or_default());
         }
         let deps = v["deps"].as_bool().unwrap_or(false);
@@ -398,14 +503,17 @@ fn steps(ctx: &Ctx, variant: &str, source: &str, sync: bool) -> Result<Value, St
 
     ctx.step(4, total, "检查运行环境");
     let check = "import json, torch, bapu.cli\nfrom bapu.device import describe\nprint('BAPU_CHECK ' + json.dumps(describe()))";
-    let lines = ctx.run(Command::new(&py).args(["-c", check])
+    let mut cmd = Command::new(&py);
+    cmd.args(["-c", check])
         .env("PYTHONPATH", home.join("app").join("src")).env("PYTHONNOUSERSITE", "1").env("PYTHONUTF8", "1")
-        .current_dir(home))?;
+        .current_dir(home);
+    runtime_env(&mut cmd, home, Some(variant));
+    let lines = ctx.run(&mut cmd)?;
     let dev: Value = lines.iter().find_map(|l| l.strip_prefix("BAPU_CHECK ")).and_then(|j| serde_json::from_str(j).ok())
         .ok_or("检查没有返回结果")?;
     let ready = json!({
         "variant": variant, "label": v["label"], "python": py_version, "device": dev, "source": source,
-        "torch": spec["packages"], "requirements_sha": sha256_file(&req),
+        "torch": pins(&spec, variant), "requirements_sha": sha256_file(&req),
         "installed_at": before.as_ref().and_then(|b| b["installed_at"].as_u64())
             .unwrap_or_else(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)),
     });
@@ -454,4 +562,28 @@ pub fn install(app: AppHandle, home: PathBuf, variant: String, source: String, c
         }
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn radeon_cards_for_amds_pytorch() {
+        for ok in ["AMD Radeon RX 9070 XT", "AMD Radeon RX 7900 XTX", "AMD Radeon RX 7800 XT", "AMD Radeon AI PRO R9700",
+                   "AMD Radeon PRO W7900", "AMD Radeon(TM) 8060S Graphics", "AMD Radeon(TM) 890M Graphics"] {
+            assert!(amd_supported(ok), "{ok}");
+        }
+        for no in ["AMD Radeon RX 6800 XT", "AMD Radeon RX 580 Series", "AMD Radeon(TM) Graphics", "AMD Radeon RX 5700 XT"] {
+            assert!(!amd_supported(no), "{no}");
+        }
+        assert!(amd_listed("AMD Radeon RX 9070 XT") && !amd_listed("AMD Radeon RX 7800 XT"));
+    }
+
+    #[test]
+    fn rocm_brings_its_own_torch_pins() {
+        let spec = json!({ "packages": ["torch==2.11.0"], "variants": { "cuda": {}, "rocm": { "packages": ["torch==2.9.1"] } } });
+        assert_eq!(pins(&spec, "cuda"), json!(["torch==2.11.0"]));
+        assert_eq!(pins(&spec, "rocm"), json!(["torch==2.9.1"]));
+    }
 }

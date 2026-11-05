@@ -1,7 +1,9 @@
 """Machine load for the sidebar: CPU, RAM, GPU, VRAM and network, sampled on request.
 
-GPU numbers come from NVML (the NVIDIA driver), so they include the model
-workers that run in their own processes, not only this server.
+GPU numbers come from NVML (the NVIDIA driver) when there is one, otherwise from
+the system (bapu.gpuload: Windows performance counters for AMD / Intel, the
+IORegistry on Apple chips). Either way they include the model workers that run
+in their own processes, not only this server.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ class LoadMonitor:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._gpu: Any = None  # NVML handle, False when there is no NVIDIA GPU / driver
+        self._other: Any = None  # bapu.gpuload reader for other GPUs, False when there is none
         psutil.cpu_percent(None)  # the first call only sets the baseline
         self._net = self._net_now()
 
@@ -73,4 +76,14 @@ class LoadMonitor:
                     out["gpu"] = gpu
                 except Exception:  # noqa: BLE001 - driver hiccup: skip this sample
                     pass
+            else:
+                if self._other is None:
+                    from bapu import gpuload
+
+                    self._other = gpuload.reader() or False
+                if self._other:
+                    try:
+                        out["gpu"] = self._other.sample()
+                    except Exception:  # noqa: BLE001 - counters hiccup: skip this sample
+                        pass
             return out

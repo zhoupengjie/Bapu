@@ -20,7 +20,7 @@ export type UpdateStatus = {
 };
 type Variant = { id: string; label: string; detail: string; size_gb: number; experimental: boolean; available: boolean; note: string; recommended: boolean };
 export type SetupInfo = {
-  home: string; writable: boolean; nvidia: { name: string; driver: number | null }[]; adapters: string[]; amd: boolean;
+  home: string; writable: boolean; nvidia: { name: string; driver: number | null }[]; adapters: string[]; amd: boolean; amd_supported?: boolean; apple?: string | null;
   variants: Variant[]; recommended: string;
   sources: Record<"official" | "china", { label: string; detail: string }>;
   settings: { source?: string; measured?: Probe } | null;

@@ -12,6 +12,11 @@
 //! it (setup.rs: Python 3.12, Bapu's packages and the PyTorch build for the
 //! chosen device, from the chosen download source) — without touching system
 //! Python or the registry. Development build: uses the checkout's `.venv`.
+//!
+//! macOS (Apple chips): the program is `Bapu.app` with `app/` and `tools/` in
+//! `Contents/Resources`. Nothing is written into the bundle (that would break its
+//! signature): `runtime/`, `models/` and `data/` live in
+//! `~/Library/Application Support/Bapu`, where `app` and `tools` are links into the bundle.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -40,12 +45,25 @@ struct Backend {
     status: Mutex<(String, Option<String>)>,
     /// a project to open once the page asks (launch argument)
     pending: Mutex<Option<String>>,
+    /// the page's interface language (zh-CN / en), for the shell's own dialogs
+    lang: Mutex<String>,
+}
+
+/// The shell's few texts in the page's language: (message, quit, keep going).
+fn close_texts(lang: &str, installing: bool) -> (&'static str, &'static str, &'static str) {
+    match (lang, installing) {
+        ("en", true) => ("The runtime is being installed. If you quit now, press Resume on the Setup page next time; what has been downloaded is kept. Quit?", "Quit", "Keep installing"),
+        ("en", false) => ("A project is still being processed. Quitting stops it (finished steps are kept). Quit?", "Quit", "Keep processing"),
+        (_, true) => ("运行环境正在安装。现在退出的话，下次打开 Bapu 时在环境页点继续，已经下载的部分不用重下。确定退出吗？", "退出", "继续安装"),
+        (_, false) => ("还有工程在处理，关掉 Bapu 会中断它（已经算完的步骤会保留）。确定退出吗？", "退出", "继续处理"),
+    }
 }
 
 /// Where Bapu runs from.
 #[derive(Clone, Debug)]
 pub enum Mode {
-    /// `<folder>\Bapu.exe` with `app\`, `runtime\`, `models\`, `data\` beside it.
+    /// `<folder>\Bapu.exe` with `app\`, `runtime\`, `models\`, `data\` beside it
+    /// (macOS: `~/Library/Application Support/Bapu`, see `mac`).
     Portable(PathBuf),
     /// A development checkout with a `.venv`.
     Dev(PathBuf),
@@ -53,6 +71,10 @@ pub enum Mode {
 
 impl Mode {
     pub fn detect() -> Mode {
+        #[cfg(target_os = "macos")]
+        if let Some(home) = mac::portable_home() {
+            return Mode::Portable(home);
+        }
         if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
             if dir.join("app").join("src").join("bapu").is_dir() {
                 return Mode::Portable(strip_verbatim(dir));
@@ -84,6 +106,111 @@ impl Mode {
         match self {
             Mode::Portable(h) => h.join("data").join("logs").join("serve.log"),
             Mode::Dev(h) => h.join(".cache").join("desktop-serve.log"),
+        }
+    }
+}
+
+/// The app bundle on macOS: it is signed, so it is only read. Bapu's folder is
+/// `~/Library/Application Support/Bapu` (`runtime`, `models`, `data` as on Windows), and
+/// `app` and `tools` there are links to `Bapu.app/Contents/Resources/{app,tools}`, made at
+/// every launch (the app may have been moved or replaced since).
+#[cfg(target_os = "macos")]
+mod mac {
+    use std::fs;
+    use std::io;
+    use std::os::unix::fs::symlink;
+    use std::path::{Path, PathBuf};
+    use std::sync::OnceLock;
+
+    /// The home of the bundled app (None: not run from a Bapu.app with `app/` inside).
+    pub fn portable_home() -> Option<PathBuf> {
+        static HOME: OnceLock<Option<PathBuf>> = OnceLock::new();
+        HOME.get_or_init(|| {
+            // Bapu.app/Contents/MacOS/Bapu -> Bapu.app/Contents/Resources
+            let exe = std::env::current_exe().ok()?;
+            let exe = fs::canonicalize(&exe).unwrap_or(exe);
+            let resources = exe.parent()?.parent()?.join("Resources");
+            if !resources.join("app").join("src").join("bapu").is_dir() {
+                return None;
+            }
+            let user = std::env::var_os("HOME").filter(|h| !h.is_empty())?;
+            let home = PathBuf::from(user).join("Library").join("Application Support").join("Bapu");
+            let _ = fs::create_dir_all(&home);
+            for name in ["app", "tools"] {
+                if let Err(e) = link(&home, name, &resources.join(name)) {
+                    log(&home, &format!("{name} 链接不到 {}：{e}", resources.join(name).display()));
+                }
+            }
+            Some(home)
+        }).clone()
+    }
+
+    /// `home/name` -> `target`. Only links are replaced; a real folder in the way is never
+    /// deleted (it could hold someone's files): an empty one is removed, others are moved aside.
+    fn link(home: &Path, name: &str, target: &Path) -> io::Result<()> {
+        let at = home.join(name);
+        match fs::symlink_metadata(&at) {
+            Ok(m) if m.file_type().is_symlink() => {
+                if fs::read_link(&at).is_ok_and(|t| t == target) {
+                    return Ok(());
+                }
+                // a new link renamed over the old one: there is no moment without `app`
+                let tmp = home.join(format!(".{name}.link"));
+                let _ = fs::remove_file(&tmp);
+                symlink(target, &tmp)?;
+                return fs::rename(&tmp, &at);
+            }
+            Ok(m) => {
+                if !(m.is_dir() && fs::remove_dir(&at).is_ok()) {
+                    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                    let aside = home.join(format!("{name}.moved-{secs}"));
+                    fs::rename(&at, &aside)?;
+                    log(home, &format!("{} 不是链接，已移到 {}", at.display(), aside.display()));
+                }
+            }
+            Err(_) => {}
+        }
+        symlink(target, &at)
+    }
+
+    fn log(home: &Path, msg: &str) {
+        use std::io::Write;
+        let p = home.join("data").join("logs").join("shell.log");
+        let _ = fs::create_dir_all(p.parent().unwrap());
+        if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(p) {
+            let _ = writeln!(f, "{msg}");
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn links_are_replaced_and_folders_never_deleted() {
+            let base = std::env::temp_dir().join(format!("bapu-link-test-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&base);
+            let (home, a, b) = (base.join("home"), base.join("a"), base.join("b"));
+            for d in [&home, &a, &b] {
+                fs::create_dir_all(d).unwrap();
+            }
+            link(&home, "app", &a).unwrap();
+            assert_eq!(fs::read_link(home.join("app")).unwrap(), a);
+            link(&home, "app", &a).unwrap(); // already right: left alone
+            link(&home, "app", &b).unwrap(); // the app moved: the stale link is replaced
+            assert_eq!(fs::read_link(home.join("app")).unwrap(), b);
+            fs::create_dir_all(home.join("tools").join("sub")).unwrap();
+            fs::write(home.join("tools").join("sub").join("x"), b"keep").unwrap();
+            link(&home, "tools", &a).unwrap(); // a real folder is moved aside
+            assert_eq!(fs::read_link(home.join("tools")).unwrap(), a);
+            let moved: Vec<_> = fs::read_dir(&home).unwrap().flatten()
+                .filter(|e| e.file_name().to_string_lossy().starts_with("tools.moved-")).collect();
+            assert_eq!(moved.len(), 1);
+            assert_eq!(fs::read(moved[0].path().join("sub").join("x")).unwrap(), b"keep");
+            fs::create_dir_all(home.join("empty")).unwrap();
+            link(&home, "empty", &b).unwrap(); // an empty folder just goes
+            assert_eq!(fs::read_link(home.join("empty")).unwrap(), b);
+            let _ = fs::remove_dir_all(&base);
         }
     }
 }
@@ -127,12 +254,16 @@ fn start_service(mode: &Mode, port: u16) -> Result<Child, String> {
     if let Ok(exe) = std::env::current_exe() {
         cmd.env("BAPU_APP_EXE", strip_verbatim(exe));
     }
+    // ops Metal (MPS) lacks run on the CPU; torch reads this when it is imported, workers inherit it
+    #[cfg(target_os = "macos")]
+    cmd.env("PYTORCH_ENABLE_MPS_FALLBACK", "1");
     if let Mode::Portable(h) = mode {
         cmd.args(["--work", "data", "--web", "app/web"])
             .env("PYTHONPATH", h.join("app").join("src"))
             .env("PYTHONNOUSERSITE", "1")
             .env("BAPU_HOME", h)
             .env("BAPU_CACHE_DIR", h); // models\ is <cache>\models
+        setup::runtime_env(&mut cmd, h, None);
     }
     #[cfg(windows)]
     {
@@ -298,6 +429,12 @@ fn setup_install(app: AppHandle, variant: String, source: String, choice: String
     setup::install(app, home, variant, source, choice, measured)
 }
 
+/// The page tells the shell its interface language (for the close dialogs).
+#[tauri::command]
+fn set_language(app: AppHandle, lang: String) {
+    *app.state::<Backend>().lang.lock().unwrap() = lang;
+}
+
 /// Pause the runtime install; 继续 runs setup_install again and skips what is already downloaded.
 #[tauri::command]
 fn setup_pause() {
@@ -350,7 +487,7 @@ fn main() {
         .manage(Backend::default())
         .manage(load::Load::default())
         .invoke_handler(tauri::generate_handler![service_status, take_launch_project, setup_info, setup_probe, setup_install,
-            setup_pause, setup_settings, sys_load])
+            setup_pause, setup_settings, sys_load, set_language])
         .setup(|app| {
             let args: Vec<String> = std::env::args().collect();
             *app.state::<Backend>().pending.lock().unwrap() = project_arg(&args);
@@ -362,20 +499,24 @@ fn main() {
                 let app = window.app_handle().clone();
                 if setup::running() {
                     api.prevent_close();
+                    let lang = app.state::<Backend>().lang.lock().unwrap().clone();
+                    let (msg, quit, keep) = close_texts(&lang, true);
                     app.dialog()
-                        .message("运行环境正在安装。现在退出的话，下次打开 Bapu 时在环境页点继续，已经下载的部分不用重下。确定退出吗？")
+                        .message(msg)
                         .title("Bapu").kind(MessageDialogKind::Warning)
-                        .buttons(MessageDialogButtons::OkCancelCustom("退出".into(), "继续安装".into()))
+                        .buttons(MessageDialogButtons::OkCancelCustom(quit.into(), keep.into()))
                         .show(move |quit| if quit { setup::cancel(); app.exit(0) });
                     return;
                 }
                 let port = app.state::<Backend>().port.load(Ordering::SeqCst);
                 if port != 0 && busy(port) {
                     api.prevent_close();
+                    let lang = app.state::<Backend>().lang.lock().unwrap().clone();
+                    let (msg, quit, keep) = close_texts(&lang, false);
                     app.dialog()
-                        .message("还有工程在处理，关掉 Bapu 会中断它（已经算完的步骤会保留）。确定退出吗？")
+                        .message(msg)
                         .title("Bapu").kind(MessageDialogKind::Warning)
-                        .buttons(MessageDialogButtons::OkCancelCustom("退出".into(), "继续处理".into()))
+                        .buttons(MessageDialogButtons::OkCancelCustom(quit.into(), keep.into()))
                         .show(move |quit| if quit { stop_service(&app); app.exit(0) });
                 }
             }
@@ -391,6 +532,18 @@ fn main() {
         .expect("Bapu 窗口启动失败");
 
     app.run(|app, event| {
+        // macOS: a .bapu opened from Finder (also the one Bapu is launched with) comes as an event, not in argv
+        #[cfg(target_os = "macos")]
+        {
+            if let RunEvent::Opened { urls } = &event {
+                let path = urls.iter().filter_map(|u| u.to_file_path().ok())
+                    .map(|p| p.to_string_lossy().to_string())
+                    .find(|p| p.to_lowercase().ends_with(".bapu"));
+                if let Some(p) = path {
+                    open_in_page(app, p);
+                }
+            }
+        }
         if let RunEvent::Exit = event {
             setup::cancel();
             stop_service(app);

@@ -185,13 +185,15 @@ def status(out: Path) -> None:
 @click.option("--format", "formats", default="mid,svp,paste", show_default=True, help="mid / svp / paste，逗号分隔")
 @click.option("--audio", "audio", default="accompaniment,lead_dry", show_default=True,
               help=".svp 里加哪些音频轨：accompaniment / lead_dry / none，逗号分隔")
-def export(out: Path, formats: str, audio: str) -> None:
+@click.option("--grid", type=click.Choice(["0", "8", "16", "32"]), default="0", show_default=True,
+              help="对齐 SV 网格并把音符吸附到 1/8、1/16、1/32 音符（音频轨跟着音符一起移）；0 不对齐")
+def export(out: Path, formats: str, audio: str, grid: str) -> None:
     """导出到工程文件夹（.bapu 文件旁边），不会覆盖不是 Bapu 写的同名文件。"""
     import json
 
     wd = _data(out)
     try:
-        written = jobs.export(wd, [f.strip() for f in formats.split(",") if f.strip()], audio)
+        written = jobs.export(wd, [f.strip() for f in formats.split(",") if f.strip()], audio, int(grid))
     except jobs.JobError as e:
         raise click.ClickException(str(e)) from None
     for f, p in written:

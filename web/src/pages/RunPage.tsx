@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ApiError, api, follow, type StageInfo } from "../api";
 import { go, started, useJob } from "../App";
 import { STAGE_LABEL } from "../env";
+import { t } from "../i18n";
 import { Icon } from "../icons";
 
 type Live = { stage: string; fraction: number | null };
@@ -9,11 +10,11 @@ type Row = { stage: string; title: string; index: number; state: "fresh" | "stal
 
 // stages STAGE_LABEL does not name yet
 const MORE_LABEL: Record<string, string> = { lead: "提取主唱", splits: "合并音符" };
-const label = (stage: string, title: string) => STAGE_LABEL[stage] ?? MORE_LABEL[stage] ?? title;
+const label = (stage: string, title: string) => t(STAGE_LABEL[stage] ?? MORE_LABEL[stage] ?? title);
 
 function took(seconds: number): string {
-  if (seconds < 60) return `用了 ${Math.max(1, Math.round(seconds))} 秒`;
-  return `用了 ${Math.round(seconds / 60)} 分钟`;
+  if (seconds < 60) return t("用了 {n} 秒", { n: Math.max(1, Math.round(seconds)) });
+  return t("用了 {n} 分钟", { n: Math.round(seconds / 60) });
 }
 
 export default function RunPage() {
@@ -90,12 +91,12 @@ export default function RunPage() {
   const failed = job.state === "failed";
 
   let headline: string;
-  if (job.state === "queued") headline = "排队中…";
-  else if (running) headline = current ? `正在${label(current.stage, current.title)}…` : "准备中…";
-  else if (done) headline = "处理完成";
-  else if (failed) headline = "处理出错了";
-  else if (job.state === "cancelled" || started(job)) headline = "已停止";
-  else headline = "还没开始";
+  if (job.state === "queued") headline = t("排队中…");
+  else if (running) headline = current ? t("正在{step}…", { step: label(current.stage, current.title) }) : t("准备中…");
+  else if (done) headline = t("处理完成");
+  else if (failed) headline = t("处理出错了");
+  else if (job.state === "cancelled" || started(job)) headline = t("已停止");
+  else headline = t("还没开始");
 
   return (
     <section className="card narrow" aria-labelledby="h-run">
@@ -103,16 +104,16 @@ export default function RunPage() {
         <h1 id="h-run">{headline}</h1>
         <span className="mono" style={{ fontSize: 18 }}>{pct}%</span>
       </div>
-      <div className="bar" role="progressbar" aria-label="总进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}>
+      <div className="bar" role="progressbar" aria-label={t("总进度")} aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}>
         <i style={{ width: `${pct}%` }} />
       </div>
 
-      {failed && job.error && <div className="notice bad">{job.error}</div>}
-      {error && <div className="notice bad">{error}</div>}
+      {failed && job.error && <div className="notice bad">{t(job.error)}</div>}
+      {error && <div className="notice bad">{t(error)}</div>}
       {needsEnv && (
         <div className="notice bad foot">
-          <span>还缺模型</span>
-          <button type="button" className="btn" onClick={() => go("env")}>去环境</button>
+          <span>{t("还缺模型")}</span>
+          <button type="button" className="btn" onClick={() => go("env")}>{t("去环境")}</button>
         </div>
       )}
 
@@ -134,13 +135,13 @@ export default function RunPage() {
 
       <div className="foot">
         {running ? (
-          <><span /><button type="button" className="btn" onClick={stop}>停止</button></>
+          <><span /><button type="button" className="btn" onClick={stop}>{t("停止")}</button></>
         ) : done ? (
           <><span className="muted" style={{ fontSize: 14 }}>{took(seconds)}</span>
-            <button type="button" className="btn primary" onClick={() => go("check")}>去检查</button></>
+            <button type="button" className="btn primary" onClick={() => go("check")}>{t("去检查")}</button></>
         ) : (
           <><span />
-            <button type="button" className="btn primary" disabled={busy} onClick={start}>{started(job) ? "继续处理" : "开始处理"}</button></>
+            <button type="button" className="btn primary" disabled={busy} onClick={start}>{started(job) ? t("继续处理") : t("开始处理")}</button></>
         )}
       </div>
     </section>

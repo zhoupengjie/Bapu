@@ -4,6 +4,7 @@ import App from "./App";
 import { setApiBase } from "./api";
 import { inDesktop, invoke, onDesktopEvent, routeExternalLinks, type Service } from "./desktop";
 import { applyTheme } from "./theme";
+import { t, useLang } from "./i18n";
 import "./styles.css";
 
 applyTheme();
@@ -12,6 +13,11 @@ routeExternalLinks();
 /** In the desktop window the UI is built into Bapu.exe: it talks to the Python service the
  *  shell starts (on a free port), and sets that service's runtime up when it is missing. */
 function Root() {
+  const lang = useLang(); // re-render everything when the language changes
+  useEffect(() => {
+    document.title = t("Bapu 扒谱");
+    invoke("set_language", { lang }).catch(() => {}); // the desktop shell's own dialogs
+  }, [lang]);
   const [svc, setSvc] = useState<Service | null>(null);
   useEffect(() => {
     if (!inDesktop()) return;

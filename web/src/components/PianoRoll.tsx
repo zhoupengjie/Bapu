@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Kind, ScoreLine } from "../api";
+import { t, useLang } from "../i18n";
 import { useThemeVersion } from "../theme";
 
 const NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
@@ -55,6 +56,7 @@ export default function PianoRoll({
   kindOverride = {}, cuts = [], flagged, bpm, beatsPerBar = 4, height = 360, rowHeight = 14, readOnly = false,
 }: Props) {
   const themeV = useThemeVersion(); // colours come from CSS vars: redraw when light / dark changes
+  const lang = useLang(); // canvas text is translated: redraw when the language changes
   const wrap = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const [width, setWidth] = useState(800);
@@ -254,7 +256,7 @@ export default function PianoRoll({
         g.fillRect(x(a), TOP - 4, x(b) - x(a), 3);
       }
       g.fillStyle = ln.attention ? v("--warn") : v("--muted");
-      g.fillText(`第${ln.line}句`, Math.max(KEYS + 2, x(a) + 3), RULER + 12);
+      g.fillText(t("第{n}句", { n: ln.line }), Math.max(KEYS + 2, x(a) + 3), RULER + 12);
     }
     g.restore();
 
@@ -279,7 +281,7 @@ export default function PianoRoll({
     g.fillRect(0, 0, KEYS - 1, TOP - 1);
     g.fillStyle = v("--muted");
     g.font = "10px system-ui, sans-serif";
-    g.fillText(bpm ? "小节" : "时间", 6, 14);
+    g.fillText(bpm ? t("小节") : t("时间"), 6, 14);
 
     // playhead
     if (playhead >= t0 && playhead <= t1) {
@@ -292,7 +294,7 @@ export default function PianoRoll({
       g.lineTo(px, 8);
       g.fill();
     }
-  }, [notes, lines, t0, span, playhead, selected, primary, kindOverride, cuts, flagged, width, height, top, drag, bpm, beatsPerBar, themeV]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [notes, lines, t0, span, playhead, selected, primary, kindOverride, cuts, flagged, width, height, top, drag, bpm, beatsPerBar, themeV, lang]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- wheel: scroll (Shift: sideways), Ctrl: zoom time around the pointer ---------------
   const view = useRef({ t0, span, top, duration, width });
@@ -414,7 +416,7 @@ export default function PianoRoll({
         onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={() => setDrag(null)}
         onAuxClick={(e) => e.preventDefault()} onContextMenu={(e) => e.preventDefault()}
         onKeyDown={(e) => { if (e.key === "Escape" && !readOnly) onSelect([], null); }}
-        role="img" aria-label={`${label}：${t0.toFixed(1)}–${t1.toFixed(1)} 秒，${visible.length} 个音符，已选 ${selected.size} 个`} />
+        role="img" aria-label={t("{label}：{a}–{b} 秒，{n} 个音符，已选 {k} 个", { label, a: t0.toFixed(1), b: t1.toFixed(1), n: visible.length, k: selected.size })} />
     </div>
   );
 }

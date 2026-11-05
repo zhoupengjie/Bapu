@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import WaveSurfer from "wavesurfer.js";
 import { api, audioUrl, mmss, type Review, type Score } from "../api";
 import PianoRoll from "../components/PianoRoll";
+import { t } from "../i18n";
 import { Icon } from "../icons";
 import { useThemeVersion } from "../theme";
 
@@ -71,7 +72,7 @@ export default function CheckPage({ id }: { id: string }) {
   timeRef.current = time;
 
   useEffect(() => {
-    api.get<Score>(`/jobs/${enc}/score`).then(setScore).catch((e) => setError(e.message));
+    api.get<Score>(`/jobs/${enc}/score`).then(setScore).catch((e) => setError(t(e.message)));
     api.get<Review>(`/jobs/${enc}/review`).then(setReview).catch(() => {});
   }, [enc]);
 
@@ -95,7 +96,7 @@ export default function CheckPage({ id }: { id: string }) {
     w.on("play", () => setPlaying(true));
     w.on("pause", () => setPlaying(false));
     w.on("finish", () => setPlaying(false));
-    w.on("error", () => setAudioError("这条音轨还没有生成"));
+    w.on("error", () => setAudioError(t("这条音轨还没有生成")));
     ws.current = w;
     setAudioError(null);
     return () => {
@@ -173,64 +174,64 @@ export default function CheckPage({ id }: { id: string }) {
     <div className="review">
       <div style={{ display: "flex", flexDirection: "column", gap: 18, minWidth: 0 }}>
         {(error || audioError) && <div className="notice bad">{error ?? audioError}</div>}
-        <section className="card" aria-label="播放" style={{ padding: "18px 20px", display: "flex", flexDirection: "column", gap: 12 }}>
+        <section className="card" aria-label={t("播放")} style={{ padding: "18px 20px", display: "flex", flexDirection: "column", gap: 12 }}>
           <div className="player">
             <button type="button" className="btn primary" style={{ display: "flex", gap: 6, alignItems: "center" }}
               onClick={() => ws.current?.playPause()}>
-              <Icon name={playing ? "pause" : "play"} size={16} />{playing ? "暂停" : "播放"}
+              <Icon name={playing ? "pause" : "play"} size={16} />{playing ? t("暂停") : t("播放")}
             </button>
             <span className="mono">{mmss(time)}</span>
-            <div className="seg" role="group" aria-label="音轨">
+            <div className="seg" role="group" aria-label={t("音轨")}>
               {STEMS.map(([k, label]) => (
-                <button key={k} type="button" className={stem === k ? "on" : ""} aria-pressed={stem === k} onClick={() => setStem(k)}>{label}</button>
+                <button key={k} type="button" className={stem === k ? "on" : ""} aria-pressed={stem === k} onClick={() => setStem(k)}>{t(label)}</button>
               ))}
             </div>
           </div>
           <div className="wave-box"><div ref={waveEl} /></div>
         </section>
 
-        <section className="card roll" aria-label="钢琴卷帘">
+        <section className="card roll" aria-label={t("钢琴卷帘")}>
           <div className="roll-head foot">
             <span className="mono muted" style={{ fontSize: 14 }}>{short(t0)} – {short(t0 + span)}</span>
             <span style={{ display: "flex", gap: 6 }}>
-              <button type="button" className="icon-btn" aria-label="往前" title="往前" onClick={() => move(-1)}><Icon name="left" size={16} /></button>
-              <button type="button" className="icon-btn" aria-label="往后" title="往后" onClick={() => move(1)}><Icon name="right" size={16} /></button>
-              <button type="button" className="icon-btn" aria-label="缩小" title="缩小" onClick={() => zoom(1.5)}><Icon name="minus" size={16} /></button>
-              <button type="button" className="icon-btn" aria-label="放大" title="放大" onClick={() => zoom(1 / 1.5)}><Icon name="plus" size={16} /></button>
+              <button type="button" className="icon-btn" aria-label={t("往前")} title={t("往前")} onClick={() => move(-1)}><Icon name="left" size={16} /></button>
+              <button type="button" className="icon-btn" aria-label={t("往后")} title={t("往后")} onClick={() => move(1)}><Icon name="right" size={16} /></button>
+              <button type="button" className="icon-btn" aria-label={t("缩小")} title={t("缩小")} onClick={() => zoom(1.5)}><Icon name="minus" size={16} /></button>
+              <button type="button" className="icon-btn" aria-label={t("放大")} title={t("放大")} onClick={() => zoom(1 / 1.5)}><Icon name="plus" size={16} /></button>
               <span className="help">
-                <button type="button" className="icon-btn" aria-label="操作和颜色说明" aria-expanded={help} onClick={() => setHelp((h) => !h)}>
+                <button type="button" className="icon-btn" aria-label={t("操作和颜色说明")} aria-expanded={help} onClick={() => setHelp((h) => !h)}>
                   <Icon name="help" size={16} />
                 </button>
                 <div className="pop" hidden={!help}>
-                  <b style={{ fontWeight: 500 }}>颜色</b>
+                  <b style={{ fontWeight: 500 }}>{t("颜色")}</b>
                   <span>
-                    <span className="pill" style={{ background: "var(--word)", color: "var(--note-ink)" }}>字</span>{" "}
-                    <span className="pill" style={{ background: "var(--sustain)", color: "#3d2a0a" }}>-</span> 延音{" "}
-                    <span className="pill" style={{ background: "var(--cont)", color: "var(--note-ink)" }}>+</span> 连音
+                    <span className="pill" style={{ background: "var(--word)", color: "var(--note-ink)" }}>{t("字")}</span>{" "}
+                    <span className="pill" style={{ background: "var(--sustain)", color: "#3d2a0a" }}>-</span> {t("延音")}{" "}
+                    <span className="pill" style={{ background: "var(--cont)", color: "var(--note-ink)" }}>+</span> {t("连音")}
                   </span>
-                  <b style={{ fontWeight: 500, marginTop: 6 }}>操作</b>
-                  <span>拖动或中键平移 · 滚轮上下</span>
-                  <span>Shift+滚轮左右 · Ctrl+滚轮缩放</span>
-                  <span>点标尺定位 · 空格播放</span>
+                  <b style={{ fontWeight: 500, marginTop: 6 }}>{t("操作")}</b>
+                  <span>{t("拖动或中键平移 · 滚轮上下")}</span>
+                  <span>{t("Shift+滚轮左右 · Ctrl+滚轮缩放")}</span>
+                  <span>{t("点标尺定位 · 空格播放")}</span>
                 </div>
               </span>
             </span>
           </div>
           {score ? (
-            <PianoRoll readOnly label="主唱" notes={score.notes} lines={reviewLines} t0={t0} span={span} playhead={time}
+            <PianoRoll readOnly label={t("主唱")} notes={score.notes} lines={reviewLines} t0={t0} span={span} playhead={time}
               duration={songLength} selected={selection} primary={selected}
               bpm={score.tempo.bpm} beatsPerBar={parseInt(score.tempo.time_signature) || 4} height={360}
               onSelect={select} onSeek={seek} onView={(a, b) => { setT0(a); setSpan(b); }} />
           ) : (
-            <div className="muted small" style={{ padding: 16 }}>{error ? "没有读到乐谱" : "正在读取乐谱…"}</div>
+            <div className="muted small" style={{ padding: 16 }}>{error ? t("没有读到乐谱") : t("正在读取乐谱…")}</div>
           )}
         </section>
       </div>
 
       <section className="card" aria-labelledby="check-title" style={{ padding: 0, overflow: "hidden" }}>
         <div style={{ padding: 16 }}>
-          <h1 id="check-title" style={{ fontSize: 18 }}>{review ? `可能不准 ${items.length} 处` : "可能不准"}</h1>
-          <p className="lead" style={{ fontSize: 14 }}>点一处听一听，到 SV 里再改</p>
+          <h1 id="check-title" style={{ fontSize: 18 }}>{review ? t("可能不准 {n} 处", { n: items.length }) : t("可能不准")}</h1>
+          <p className="lead" style={{ fontSize: 14 }}>{t("点一处听一听，到 SV 里再改")}</p>
         </div>
         <div className="items">
           {items.map((it) => {
@@ -238,14 +239,14 @@ export default function CheckPage({ id }: { id: string }) {
             return (
               <button key={it.id} type="button" className={on ? "on" : ""} aria-pressed={on} onClick={() => pickItem(it)}>
                 <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  {on && <Icon name="play" size={14} />}{it.why}
+                  {on && <Icon name="play" size={14} />}{t(it.why)}
                 </span>
                 <span className="mono muted" style={{ fontSize: 13 }}>{mmss(it.time)}</span>
               </button>
             );
           })}
-          {review && !items.length && <div className="muted small" style={{ padding: "4px 12px 12px" }}>没有要提醒的地方。</div>}
-          {!review && <div className="muted small" style={{ padding: "4px 12px 12px" }}>正在读取…</div>}
+          {review && !items.length && <div className="muted small" style={{ padding: "4px 12px 12px" }}>{t("没有要提醒的地方。")}</div>}
+          {!review && <div className="muted small" style={{ padding: "4px 12px 12px" }}>{t("正在读取…")}</div>}
         </div>
       </section>
     </div>

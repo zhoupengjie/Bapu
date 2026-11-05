@@ -50,8 +50,14 @@ uv run pytest                                # 单元测试（只用虚构数据
 - 原曲可以是 WAV、FLAC、MP3，也可以是 MP4 / M4A / MOV / MKV 等音频或视频文件：soundfile 读不了的格式，
   在第一步用 PyAV（自带 FFmpeg，不用另装）取出第一条音轨，存成 `01_separate/source.wav` 再分离。
 - 界面：左侧是 新建工程 / 打开工程 / 保存工程（Ctrl+S）、五个步骤（环境 → 导入 → 自动处理 → 检查 → 导出）和
-  实时负载（CPU、内存、GPU、显存、下载、上传）；浅色 / 深色 / 跟随系统，左上角切换。一次只处理一个工程。
+  实时负载（CPU、内存、GPU、显存、下载、上传）；浅色 / 深色 / 跟随系统，左上角切换。界面有简体中文和 English，第一次按系统语言选（中文系统用中文，其余用英文），
+  左上角可以切换；文字在 `web/src/locales/`，代码里写简体中文原文并用 `t()` 包起来。一次只处理一个工程。
   “导入”一页选原曲、可选的参考歌词和语言；“检查”只列出可能不准的地方（点一下就听那一句），不在 Bapu 里改，到 SV 里改。
+- 导出可以对齐 SV 的网格（导出页“对齐网格”，默认 1/16；命令行 `bapu export --grid 16`）：先把整首歌（音符、伴奏轨、
+  主唱干声轨一起）往后移不到一拍，让歌的拍子落在 SV 的拍线上，再把音符的头尾吸附到网格；音频只移动不拉伸，
+  所以和音符始终对得上。吸附不会让音符重叠、变空或同时开始。拍子按测出的固定速度算，速度有变化的歌越往后越偏。
+- 侧栏的 GPU / 显存：NVIDIA 用驱动的 NVML；AMD、Intel 用 Windows 自带的 GPU 性能计数器（和任务管理器一样）；
+  Apple 芯片读 IORegistry 的 GPU 统计（显存一栏是 GPU 占用的统一内存）。
 - 工程：每首歌一个工程文件夹，自动放在原曲旁边（`<歌名> - Bapu`）。外面只有 `<歌名>.bapu`
   （小 JSON：名字、原曲和歌词的位置）和导出的 `.svp` / `.mid`；复制进来的原曲和歌词、修正、每一步的结果、审查报告
   都在旁边的 `.bapu/` 文件夹里。导出不会覆盖不是 Bapu 写的同名文件（例如在 SV 里改过再保存的），会另存为 `(2)`。
@@ -62,7 +68,7 @@ uv run pytest                                # 单元测试（只用虚构数据
   （`Bapu.exe`、`tools/uv.exe`、`app/` 里的代码和网页、依赖清单）。用户双击 `Bapu.exe`：
   1. 界面内置在 `Bapu.exe` 里，直接打开，没有单独的“第一次使用”页面。流程第一步“环境”是一张清单：Python 环境、
      流程要用的 7 个模型、Bapu 本身；装好的打勾，缺的点一次“下载”按顺序补齐，每项有进度条和网速，可以暂停、继续。
-     Python 环境：检测显卡，选 PyTorch 版本（NVIDIA CUDA 12.8 / Intel XPU（实验）/ CPU），用自带的 uv 把 Python 3.12 和全部依赖装进
+     Python 环境：检测显卡，选 PyTorch 版本（NVIDIA CUDA 12.8 / AMD ROCm 7.2.1（实验，RX 7000 / 9000 和部分 Ryzen AI，Windows 11，AMD 驱动 26.2.2 以上，PyTorch 2.9.1，从 repo.radeon.com 下载，没有国内镜像）/ Intel XPU（实验）/ CPU），用自带的 uv 把 Python 3.12 和全部依赖装进
      `runtime/`（不建 venv，整个文件夹可以移动；不写注册表、不进 PATH、不碰系统里的 Python）。uv 的下载缓存在装好后才删，
      暂停或失败后再装会跳过已经下载的包。装好后 `Bapu.exe` 启动 Python 服务，接着下载模型。日志在 `data/logs/`。
   2. 模型下载支持断点续传和多线程：大文件按“下载线程”数（1–16，默认 8，在“环境”页改）分成几段同时下，
@@ -77,6 +83,12 @@ uv run pytest                                # 单元测试（只用虚构数据
   签名私钥在 `~/.bapu/release-signing-key`，不进仓库，公钥内置在 `desktop/src-tauri/src/updater.rs`）。
   程序文件夹要放在有写入权限的位置（不要放 C:\Program Files）。重新运行构建脚本只替换 `app/`、`tools/` 和 `Bapu.exe`，
   `runtime/`、`models/`、`data/` 保留。
+- macOS（只支持 Apple 芯片，M1 及以后，macOS 14 以上；PyTorch 不再出 Intel Mac 的版本）：在 Mac 上运行
+  `uv run python scripts/build_portable.py` 生成 `dist/Bapu.app` 和 `dist/Bapu-mac-<版本>.zip`；GitHub 上发布新版本时，
+  `.github/workflows/macos.yml` 会在 macOS 机器上跑测试、构建并把 zip 附到发布页（也可以手动运行）。和 Windows 版的区别：
+  Python 环境、模型和数据放在 `~/Library/Application Support/Bapu`（不写进 Bapu.app，否则签名会失效）；推理用 Metal（MPS，
+  实验），PyTorch 是 2.13.0（audio-separator 在 Apple 芯片上要求 2.13 以上）；只做了临时签名、没有公证，第一次要右键→打开；
+  程序内更新只提示新版本，到发布页下载。还没在真的 Mac 上测过。
 - 桌面窗口（Tauri，`desktop/`）开发：`cd desktop && npm install && npm run build`，生成
   `desktop/src-tauri/target/release/Bapu.exe`；旁边没有 `app/` 时它用这个代码目录的 `.venv`。它在后台启动
   `bapu serve --parent-pid`（随机端口，窗口关了服务就退出），选文件用系统对话框，外部链接用默认浏览器打开，

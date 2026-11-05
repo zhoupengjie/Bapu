@@ -1,7 +1,8 @@
 """Write a Synthesizer V Studio project (`.svp`, version 203 layout).
 
-- Times in blicks (705 600 000 per quarter) from seconds at the score's tempo,
-  not quantised.
+- Times in blicks (705 600 000 per quarter) from seconds at the score's tempo;
+  with `grid`, lined up with SV's grid first (see bapu.export.grid): the notes
+  snap to it and the audio tracks move by the same offset as the notes.
 - Every note carries its lyric (`-` / `+` included) and a `languageOverride`.
 - The vocal track has no voice: the user picks a singer in SV.
 - Optionally audio tracks (accompaniment, dry lead for comparison) that
@@ -20,6 +21,7 @@ from typing import Any, Sequence
 
 import soundfile as sf
 
+from bapu.export.grid import align
 from bapu.svp import QUARTER
 
 LANG = {"yue": "cantonese", "en": "english", "zh": "mandarin", "ja": "japanese", "ko": "korean", "es": "spanish"}
@@ -104,7 +106,9 @@ def _sv_notes(notes: list[dict[str, Any]], bpm: float, song_lang: str) -> list[d
     return out
 
 
-def build(score: dict[str, Any], *, audio_tracks: Sequence[tuple[str, Path]] = (), name: str = "Bapu") -> dict[str, Any]:
+def build(score: dict[str, Any], *, audio_tracks: Sequence[tuple[str, Path]] = (), name: str = "Bapu",
+          grid: int = 0) -> dict[str, Any]:
+    score, offset = align(score, grid)
     bpm = float(score["tempo"]["bpm"])
     num, den = (int(x) for x in str(score["tempo"].get("time_signature", "4/4")).split("/"))
     song_lang = LANG.get(score.get("lang", ""), "")
@@ -114,6 +118,7 @@ def build(score: dict[str, Any], *, audio_tracks: Sequence[tuple[str, Path]] = (
     for i, (label, path) in enumerate(audio_tracks):
         empty = _group("main", [])
         ref = _ref(empty["uuid"], instrumental=True)
+        ref["blickOffset"] = round(offset * bpm / 60.0 * QUARTER)  # the audio moves with the notes
         ref["audio"] = {"filename": str(Path(path).resolve()), "duration": float(sf.info(str(path)).duration)}
         tracks.append(_track(f"{name} {label}", len(tracks), colors[i % len(colors)], empty, ref))
     return {
@@ -131,9 +136,10 @@ def build(score: dict[str, Any], *, audio_tracks: Sequence[tuple[str, Path]] = (
 
 
 def write(score: dict[str, Any], path: Path, *, audio_tracks: Sequence[tuple[str, Path]] = (),
-          name: str = "Bapu") -> Path:
-    """`audio_tracks`: (label, file) pairs, each referenced by absolute path."""
-    project = build(score, audio_tracks=audio_tracks, name=name)
+          name: str = "Bapu", grid: int = 0) -> Path:
+    """`audio_tracks`: (label, file) pairs, each referenced by absolute path; `grid`: 8 / 16 / 32
+    lines the song up with SV's grid and snaps the notes to 1/grid notes (0: as transcribed)."""
+    project = build(score, audio_tracks=audio_tracks, name=name, grid=grid)
     path.parent.mkdir(parents=True, exist_ok=True)
     # SV writes UTF-8 JSON followed by a NUL byte.
     path.write_bytes(json.dumps(project, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\x00")

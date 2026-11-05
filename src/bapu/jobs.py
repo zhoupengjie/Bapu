@@ -79,8 +79,8 @@ def audio_tracks(wd: WorkDir, spec: str) -> list[tuple[str, Path]]:
     return out
 
 
-def export(wd: WorkDir, formats: Sequence[str] = EXPORT_FORMATS, audio: str = "accompaniment,lead_dry"
-           ) -> list[tuple[str, Path]]:
+def export(wd: WorkDir, formats: Sequence[str] = EXPORT_FORMATS, audio: str = "accompaniment,lead_dry",
+           grid: int = 0) -> list[tuple[str, Path]]:
     """Write the requested formats. In a project they go next to the .bapu
     file, named after the project, without overwriting a file Bapu did not
     write; in a bare work dir (tests, old CLI runs) into `<work dir>/export/`."""
@@ -90,6 +90,10 @@ def export(wd: WorkDir, formats: Sequence[str] = EXPORT_FORMATS, audio: str = "a
     score_p = wd.root / "score.json"
     if not score_p.exists():
         raise JobError("还没有 score.json：先跑完整个流程")
+    from bapu.export.grid import GRIDS
+
+    if grid and grid not in GRIDS:
+        raise JobError(f"网格只能是 1/{', 1/'.join(map(str, GRIDS))}（或 0：不对齐）")
     unknown = [f for f in formats if f not in EXPORT_FORMATS]
     if unknown:
         raise JobError(f"不认识的格式：{', '.join(unknown)}")
@@ -109,11 +113,11 @@ def export(wd: WorkDir, formats: Sequence[str] = EXPORT_FORMATS, audio: str = "a
     written = []
     for f in formats:
         if f == "mid":
-            out = midi.write(score, target(f"{name}.mid"))
+            out = midi.write(score, target(f"{name}.mid"), grid=grid)
         elif f == "paste":
             out = paste.write(score, target(f"{name}.paste.txt"))
         else:
-            out = svp_export.write(score, target(f"{name}.svp"), audio_tracks=audio_tracks(wd, audio), name=name)
+            out = svp_export.write(score, target(f"{name}.svp"), audio_tracks=audio_tracks(wd, audio), name=name, grid=grid)
         if in_project:
             project.record_export(wd.root, out)
         written.append((f, out))

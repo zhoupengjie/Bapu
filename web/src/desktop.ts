@@ -2,6 +2,8 @@
 // open links in the default browser directly; in a plain browser these fall back
 // to the local service (/api/dialog) and normal links.
 
+import { t as tr } from "./i18n";
+
 type Filter = { name: string; extensions: string[] };
 type TauriGlobal = {
   dialog: {
@@ -30,7 +32,8 @@ export async function desktopPick(kind: PickKind, initial?: string): Promise<str
   const t = tauri();
   if (!t) return undefined;
   const k = KINDS[kind];
-  const r = await t.dialog.open({ title: k.title, directory: kind === "folder", multiple: false, defaultPath: initial, filters: k.filters });
+  const r = await t.dialog.open({ title: tr(k.title), directory: kind === "folder", multiple: false, defaultPath: initial,
+    filters: k.filters?.map((f) => ({ ...f, name: tr(f.name) })) });
   return Array.isArray(r) ? r[0] ?? null : r;
 }
 

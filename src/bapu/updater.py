@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 import threading
 import time
 import urllib.error
@@ -67,8 +68,9 @@ class Updater:
         return paths.data_dir() / "update"
 
     def can_install(self) -> bool:
-        """Only the portable app (with its desktop shell) can swap its own files."""
-        return paths.home() is not None
+        """Only the Windows portable app (with its desktop shell) can swap its own files;
+        on macOS a new version is announced and downloaded from the release page."""
+        return paths.home() is not None and sys.platform == "win32"
 
     def status(self) -> dict[str, Any]:
         last = None

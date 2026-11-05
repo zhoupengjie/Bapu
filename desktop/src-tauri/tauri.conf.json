@@ -34,6 +34,7 @@
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
+      "icons/icon.icns",
       "icons/icon.ico"
     ],
     "fileAssociations": [
@@ -43,8 +44,18 @@
         ],
         "name": "Bapu 工程",
         "description": "Bapu 扒谱工程",
-        "role": "Editor"
+        "role": "Editor",
+        "rank": "Owner",
+        "exportedType": {
+          "identifier": "dev.bapu.project",
+          "conformsTo": [
+            "public.json"
+          ]
+        }
       }
-    ]
+    ],
+    "macOS": {
+      "minimumSystemVersion": "14.0"
+    }
   }
 }

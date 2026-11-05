@@ -7,6 +7,8 @@
 //! are never touched; if the package list changed, the next start syncs the
 //! runtime (setup::needs_sync).
 //!
+//! Windows only: on macOS this does nothing (a new version is a new Bapu.app).
+//!
 //! The zip must carry an Ed25519 signature by the release key over
 //! "bapu-update:<version>:<sha256>"; the public key is built in. A download
 //! that was tampered with on the way (mirror, proxy) is refused.
@@ -53,6 +55,11 @@ fn cleanup(home: &Path) {
 }
 
 pub fn apply_staged(home: &Path) {
+    // Windows only for now: on macOS Bapu and app/ are inside the signed app bundle, which is
+    // replaced as a whole (the Python side does not offer the in-app update there)
+    if !cfg!(windows) {
+        return;
+    }
     cleanup(home);
     let dir = home.join("data").join("update");
     let Ok(text) = fs::read_to_string(dir.join("staged.json")) else { return };

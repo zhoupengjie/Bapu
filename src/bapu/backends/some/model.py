@@ -70,8 +70,9 @@ class Attention(nn.Module):
         q = self.to_q(x)
         k, v = self.to_kv(x).chunk(2, dim=2)
         q, k, v = (z.view(b, t, self.heads, -1).transpose(1, 2) for z in (q, k, v))  # b t (h c) -> b h t c
-        if q.is_cuda:
-            # The original disables the math kernel on CUDA (flash / memory-efficient only).
+        if q.is_cuda and not getattr(torch.version, "hip", None):
+            # The original disables the math kernel on CUDA (flash / memory-efficient only). AMD's ROCm
+            # build reports "cuda" too, but its Windows wheels may lack those kernels: let it choose.
             from torch.nn.attention import SDPBackend, sdpa_kernel
 
             with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.CUDNN_ATTENTION]):

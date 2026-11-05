@@ -1,0 +1,72 @@
+# The macOS app (Apple chips): test, build Bapu.app, zip it; attach the zip to a published release.
+# Ad-hoc signed, not notarized (no Apple identity, no secrets). GitHub's macOS VMs have no Metal
+# (MPS) device, so the tests run on the CPU.
+name: macOS
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: write  # gh release upload
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-14  # Apple Silicon
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24  # vite 8 needs ^20.19 or >=22.12
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            desktop/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Python environment
+        run: uv sync --frozen
+
+      - name: Tests
+        run: uv run python -m pytest -q
+
+      - name: Web and desktop packages
+        run: |
+          npm ci --prefix web
+          npm ci --prefix desktop
+
+      - name: Build Bapu.app
+        run: uv run python scripts/build_portable.py
+
+      # after the build: the shell embeds web/dist
+      - name: Shell tests
+        run: cargo test --manifest-path desktop/src-tauri/Cargo.toml
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Bapu-mac
+          path: dist/Bapu-mac-*.zip
+          if-no-files-found: error
+
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$TAG" dist/Bapu-mac-*.zip --clobber

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { inDesktop, invoke } from "../desktop";
+import { t } from "../i18n";
 
 type Load = {
   cpu: number | null;
@@ -41,13 +42,13 @@ export default function LoadPanel({ apiUp }: { apiUp: boolean }) {
   const vram = g ? (g.mem_used / g.mem_total) * 100 : null;
   const pct = (x: number | null | undefined) => (x == null ? "—" : `${Math.round(x)}%`);
   return (
-    <div className="load" aria-label="负载">
+    <div className="load" aria-label={t("负载")}>
       <Row k="CPU" v={pct(l?.cpu)} pct={l?.cpu ?? 0} />
-      <Row k="内存" v={pct(ram)} pct={ram ?? 0} />
+      <Row k={t("内存")} v={pct(ram)} pct={ram ?? 0} />
       <Row k="GPU" v={pct(g?.util)} pct={g?.util ?? 0} />
-      <Row k="显存" v={pct(vram)} pct={vram ?? 0} />
-      <Row k="下载" v={l?.net ? rate(l.net.down) : "—"} pct={l?.net ? (l.net.down / NET_FULL) * 100 : 0} sep />
-      <Row k="上传" v={l?.net ? rate(l.net.up) : "—"} pct={l?.net ? (l.net.up / NET_FULL) * 100 : 0} />
+      <Row k={t("显存")} v={pct(vram)} pct={vram ?? 0} />
+      <Row k={t("下载")} v={l?.net ? rate(l.net.down) : "—"} pct={l?.net ? (l.net.down / NET_FULL) * 100 : 0} sep />
+      <Row k={t("上传")} v={l?.net ? rate(l.net.up) : "—"} pct={l?.net ? (l.net.up / NET_FULL) * 100 : 0} />
     </div>
   );
 }

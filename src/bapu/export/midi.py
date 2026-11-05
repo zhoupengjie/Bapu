@@ -1,6 +1,7 @@
 """Export the score as a single-track SMF with lyric events.
 
-Times are converted from seconds with the score's tempo, without quantising.
+Times are converted from seconds with the score's tempo; with `grid` the song is
+first lined up with the beat grid and the notes snap to it (bapu.export.grid).
 Every note gets a lyric meta event at its onset, including `-` and `+`.
 Lyric text is written as UTF-8.
 """
@@ -11,6 +12,8 @@ from pathlib import Path
 from typing import Any
 
 import mido
+
+from bapu.export.grid import align
 
 TPB = 960  # ticks per quarter: ~0.5 ms at 125 BPM
 
@@ -46,7 +49,8 @@ def _track(notes: list[dict[str, Any]], bpm: float, tpb: int, name: str, meta: l
     return tr
 
 
-def write(score: dict[str, Any], path: Path, *, track_name: str = "Bapu vocal", tpb: int = TPB) -> Path:
+def write(score: dict[str, Any], path: Path, *, track_name: str = "Bapu vocal", tpb: int = TPB, grid: int = 0) -> Path:
+    score, _ = align(score, grid)
     bpm = float(score["tempo"]["bpm"])
     num, den = (int(x) for x in str(score["tempo"].get("time_signature", "4/4")).split("/"))
     meta = [mido.MetaMessage("set_tempo", tempo=mido.bpm2tempo(bpm), time=0),
