@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from bapu import corrections as corr
-from bapu import jobs, pipeline, project, report
+from bapu import external, jobs, pipeline, project, report
 from bapu.downloads import Downloads
 from bapu.monitor import LoadMonitor
 from bapu.updater import Updater
@@ -34,6 +34,8 @@ from bapu.stages.base import Stage
 from bapu.workdir import WorkDir
 
 JOB_ID = re.compile(r"^[\w][\w\-.]{0,99}$")
+# input kind (as the API names it) -> source name in the project file / pipeline
+SOURCE_OF = {"audio": "source", "lyrics": "lyrics", "notes": "notes"}
 
 
 class ServiceError(Exception):
@@ -272,30 +274,55 @@ class JobService:
             raise ServiceError(f"保存不了工程文件：{e}") from None
         return self.summary(job_id)
 
-    def save_upload(self, job_id: str, kind: str, filename: str, data: bytes) -> Path:
+    def save_upload(self, job_id: str, kind: str, filename: str, data: bytes, track: int | None = None) -> Path:
         """Store an uploaded input inside the project (`inputs/`) and point the project at it."""
         wd = self.workdir(job_id)
         safe = Path(filename).name or kind
         dest = wd.root / "inputs" / safe
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)
-        return self._set_source(wd, kind, dest)
+        return self._set_source(wd, kind, dest, track)
 
-    def set_input(self, job_id: str, kind: str, path: Path) -> Path:
-        """Copy a local file into the project and use it as its audio / lyrics."""
+    def set_input(self, job_id: str, kind: str, path: Path, track: int | None = None) -> Path:
+        """Copy a local file into the project and use it as its audio / lyrics / notes."""
         wd = self.workdir(job_id)
         if not Path(path).is_file():
             raise ServiceError(f"找不到文件：{path}")
-        return self._set_source(wd, kind, project.copy_input(project.folder_of(wd.root), Path(path)))
+        return self._set_source(wd, kind, project.copy_input(project.folder_of(wd.root), Path(path)), track)
 
-    def _set_source(self, wd: WorkDir, kind: str, dest: Path) -> Path:
+    def clear_input(self, job_id: str, kind: str) -> None:
+        """Stop using the file given for `kind` (the copy stays in inputs/)."""
+        if kind not in SOURCE_OF or kind == "audio":
+            raise ServiceError(f"不能去掉这种输入：{kind}")
+        wd = self.workdir(job_id)
+        name = SOURCE_OF[kind]
         meta = self._meta(wd)
-        meta.setdefault("sources", {})["source" if kind == "audio" else "lyrics"] = str(dest.resolve())
+        meta.setdefault("sources", {}).pop(name, None)
+        project.write(project.folder_of(wd.root), meta)
+        # the last run's record of it would otherwise be used again (see sources())
+        recorded = wd.sources()
+        if name in recorded:
+            recorded.pop(name)
+            wd.set_sources({n: (Path(p), h) for n, (p, h) in recorded.items()})
+
+    def _set_source(self, wd: WorkDir, kind: str, dest: Path, track: int | None = None) -> Path:
+        if kind not in SOURCE_OF:
+            raise ServiceError(f"没有这种输入：{kind}")
+        if kind == "notes":  # an SV project / MIDI: converted once into the transcription's layout
+            try:
+                dest = external.notes_from_file(dest, wd.root / "inputs", track)
+            except external.AmbiguousTrack as e:
+                raise Conflict(str(e), {"tracks": e.tracks}) from None
+            except external.ExternalError as e:
+                raise ServiceError(str(e)) from None
+        meta = self._meta(wd)
+        meta.setdefault("sources", {})[SOURCE_OF[kind]] = str(dest.resolve())
         project.write(project.folder_of(wd.root), meta)
         return dest
 
     def sources(self, wd: WorkDir) -> dict[str, Path]:
-        """Inputs for the next run: the project file, falling back to the last run's."""
+        """Inputs for the next run: the project file, falling back to the last
+        run's for the audio and lyrics (notes count only while the project names them)."""
         out: dict[str, Path] = {}
         for name, p in (self._meta(wd).get("sources") or {}).items():
             if Path(p).exists():
@@ -336,6 +363,7 @@ class JobService:
                 "project_file": pfile.name if pfile else None, "state": st.state, "stage": st.stage,
                 "fraction": st.fraction, "error": st.error, "has_score": score.exists(),
                 "attention": attention, "has_lyrics": "lyrics" in self.sources(wd),
+                "has_notes": "notes" in self.sources(wd),
                 "exported_at": exported_at,
                 "export_stale": bool(exported_at and score.exists() and score.stat().st_mtime > exported_at)}
 
@@ -347,9 +375,14 @@ class JobService:
 
     def detail(self, job_id: str) -> dict[str, Any]:
         wd = self.workdir(job_id)
-        rows = pipeline.status(wd, self.registry, self.stages) if wd.manifest_path.exists() else []
+        sources = self.sources(wd)
+        rows = pipeline.status(wd, self.registry, self.stages, sources)  # before a run: all missing (or skipped)
+        names = {k: Path(v).name for k, v in sources.items()}
+        notes = external.describe(sources["notes"]) if "notes" in sources else None
+        if notes:
+            names["notes"] = notes["from"]  # the SV project / MIDI, not the converted file
         return {**self.summary(job_id), "stages": rows, "params": wd.load_params(),
-                "sources": {k: Path(v).name for k, v in self.sources(wd).items()}, "exports": self.exports(wd)}
+                "sources": names, "notes": notes, "exports": self.exports(wd)}
 
     # -- running -----------------------------------------------------------------
     def enqueue(self, job_id: str, req: RunRequest) -> None:

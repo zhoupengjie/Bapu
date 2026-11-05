@@ -8,14 +8,16 @@ import { LANGS, getLang, setLang, t, type Lang } from "./i18n";
 import LoadPanel from "./components/LoadPanel";
 import EnvPage from "./pages/EnvPage";
 import ImportPage from "./pages/ImportPage";
-import RunPage from "./pages/RunPage";
+import FlowPage from "./pages/FlowPage";
 import CheckPage from "./pages/CheckPage";
 import ExportPage from "./pages/ExportPage";
 
-/** One song at a time: the steps of the flow are the routes (#/env … #/export). */
-export type Step = "env" | "import" | "run" | "check" | "export";
-const STEP_ORDER: Step[] = ["env", "import", "run", "check", "export"];
-const TITLE: Record<Step, string> = { env: "环境", import: "导入", run: "自动处理", check: "检查", export: "导出" }; // source text, shown through t()
+/** One song at a time: the steps of the flow are the routes (#/env … #/export).
+ *  流程 is the node graph of a project, or the new-project form when there is none. */
+export type Step = "env" | "flow" | "check" | "export";
+const STEP_ORDER: Step[] = ["env", "flow", "check", "export"];
+const TITLE: Record<Step, string> = { env: "环境", flow: "流程", check: "检查", export: "导出" }; // source text, shown through t()
+const OLD_ROUTES: Record<string, Step> = { import: "flow", run: "flow" }; // links from earlier versions
 
 export const go = (step: Step) => {
   window.location.hash = `/${step}`;
@@ -24,7 +26,7 @@ export const go = (step: Step) => {
 function useStep(): Step | null {
   const read = () => {
     const s = window.location.hash.replace(/^#\/?/, "").split("/")[0];
-    return (STEP_ORDER as string[]).includes(s) ? (s as Step) : null;
+    return (STEP_ORDER as string[]).includes(s) ? (s as Step) : OLD_ROUTES[s] ?? null;
   };
   const [step, setStep] = useState(read);
   useEffect(() => {
@@ -62,7 +64,10 @@ function remember(id: string | null) {
 
 /** Has the processing been started (or finished) at least once? */
 export const started = (job: JobDetail) =>
-  job.state === "running" || job.state === "queued" || job.stages.some((s) => s.state !== "missing");
+  job.state === "running" || job.state === "queued" || job.stages.some((s) => s.state !== "missing" && s.state !== "skipped");
+
+/** The steps a run goes through: those replaced by a file the user gave are left out. */
+export const activeStages = (job: JobDetail) => job.stages.filter((s) => s.state !== "skipped");
 
 type StepView = { step: Step; status: string; state: "done" | "now" | "warn" | "todo" | "locked" };
 
@@ -76,27 +81,26 @@ function steps(job: JobDetail | null, env: EnvState): StepView[] {
         : { step: "env", status: env.runtimeMissing || env.missingModels ? t("缺 {n} 项", { n: env.missingModels + (env.runtimeMissing ? 1 : 0) }) : "", state: "warn" };
   if (!job) {
     return [envView,
-      { step: "import", status: "", state: env.ready ? "todo" : "locked" },
-      { step: "run", status: "", state: "locked" },
+      { step: "flow", status: "", state: env.ready ? "todo" : "locked" },
       { step: "check", status: "", state: "locked" },
       { step: "export", status: "", state: "locked" }];
   }
-  const total = job.stages.length || 9;
-  const fresh = job.stages.filter((s) => s.state === "fresh").length;
-  let run: StepView;
-  if (job.state === "queued") run = { step: "run", status: t("排队中"), state: "now" };
+  const active = activeStages(job);
+  const total = active.length || 9;
+  const fresh = active.filter((s) => s.state === "fresh").length;
+  let flow: StepView;
+  if (job.state === "queued") flow = { step: "flow", status: t("排队中"), state: "now" };
   else if (job.state === "running") {
-    const st = job.stages.find((s) => s.stage === job.stage);
-    const pct = st ? Math.round(((st.index - 1 + (job.fraction ?? 0)) / total) * 100) : 0;
-    run = { step: "run", status: `${pct}%`, state: "now" };
-  } else if (job.state === "failed") run = { step: "run", status: t("出错了"), state: "warn" };
-  else if (fresh === total && job.stages.length) run = { step: "run", status: "", state: "done" };
-  else if (started(job)) run = { step: "run", status: `${fresh}/${total}`, state: "warn" };
-  else run = { step: "run", status: "", state: "todo" };
+    const at = active.findIndex((s) => s.stage === job.stage);
+    const pct = at >= 0 ? Math.round(((at + (job.fraction ?? 0)) / total) * 100) : 0;
+    flow = { step: "flow", status: `${pct}%`, state: "now" };
+  } else if (job.state === "failed") flow = { step: "flow", status: t("出错了"), state: "warn" };
+  else if (fresh === total && active.length) flow = { step: "flow", status: "", state: "done" };
+  else if (started(job)) flow = { step: "flow", status: `${fresh}/${total}`, state: "warn" };
+  else flow = { step: "flow", status: "", state: "todo" };
   return [
     envView,
-    { step: "import", status: "", state: started(job) ? "done" : "todo" },
-    run,
+    flow,
     !job.has_score
       ? { step: "check", status: "", state: "locked" }
       : job.attention
@@ -258,7 +262,7 @@ export default function App({ service = null }: { service?: Service | null }) {
     if (!env.ready) return;
     if (job?.state === "running" && !window.confirm(t("这个工程还在处理，离开后它会在后台继续跑完。确定吗？"))) return;
     open(null);
-    go("import");
+    go("flow");
   };
   const onOpen = async () => {
     if (!env.apiUp) return;
@@ -295,16 +299,15 @@ export default function App({ service = null }: { service?: Service | null }) {
   const list = steps(job, env);
   const loading = env.apiUp && (jobId === undefined || (jobId && !job));
 
-  // with no route, land where the song is: environment, import, processing or check
-  const landing: Step = !env.ready ? "env" : !job ? "import" : job.has_score && job.state !== "running" ? "check" : started(job) ? "run" : "import";
+  // with no route, land where the song is: environment, the flow, or the check once there is a score
+  const landing: Step = !env.ready ? "env" : !job ? "flow" : job.has_score && job.state !== "running" ? "check" : "flow";
   const wanted: Step = routed ?? landing;
-  const shown: Step = list.find((x) => x.step === wanted)?.state === "locked" ? (env.ready ? (job ? "run" : "import") : "env") : wanted;
+  const shown: Step = list.find((x) => x.step === wanted)?.state === "locked" ? (env.ready ? "flow" : "env") : wanted;
 
   let page;
   if (loading) page = null;
   else if (shown === "env") page = <EnvPage />;
-  else if (shown === "import") page = <ImportPage key={job?.id ?? "new"} />;
-  else if (shown === "run") page = <RunPage />;
+  else if (shown === "flow") page = job ? <FlowPage key={job.id} /> : <ImportPage key="new" />;
   else if (shown === "check") page = <CheckPage key={job!.id} id={job!.id} />;
   else page = <ExportPage key={job!.id} id={job!.id} />;
 

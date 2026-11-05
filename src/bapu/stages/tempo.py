@@ -25,10 +25,11 @@ def estimate(
     tempo, beats = librosa.beat.beat_track(onset_envelope=onset, sr=sr, hop_length=hop_length, units="time")
     raw = float(np.atleast_1d(tempo)[0])
     beats = np.asarray(beats, dtype=float)
-    if len(beats) < 8:
-        return {"bpm": round(raw, 2), "bpm_raw": raw, "first_beat": float(beats[0]) if len(beats) else 0.0,
+    if len(beats) < 8:  # too short or too quiet to fit a grid: beat_track's own estimate, flagged
+        return {"bpm": round(raw, 2) or 120.0, "bpm_raw": raw, "bpm_beat_track": raw,
+                "first_beat": float(beats[0]) if len(beats) else 0.0,
                 "beats": beats.round(4).tolist(), "confidence": "low", "steady": False,
-                "per_quarter_bpm": [], "ibi_std_ms": None, "beat_phase_s": 0.0}
+                "per_quarter_bpm": [], "ibi_std_ms": None, "fit_residual_ms": None, "beat_phase_s": 0.0}
 
     ibi = np.diff(beats)
     # beat_track's tempo and its beat spacing are whole onset frames (at hop 512

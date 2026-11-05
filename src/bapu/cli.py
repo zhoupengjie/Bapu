@@ -10,7 +10,7 @@ from typing import Any
 import click
 import yaml
 
-from bapu import compare, jobs, paths, pipeline, project, report
+from bapu import compare, external, jobs, paths, pipeline, project, report
 from bapu import corrections as corr_mod
 from bapu.corrections import CorrectionsError
 from bapu.stages.lyrics import check_langs
@@ -110,9 +110,12 @@ def main() -> None:
 @click.option("--lyrics", type=click.Path(exists=True, dir_okay=False, path_type=Path),
               help="参考歌词（.ass / .lrc / .txt），用来校正听写的用字；不给时沿用上次的")
 @click.option("--lang", help="歌曲里的语言，可多选，逗号分隔：yue（粤语）、zh（普通话）、en（英语）；默认 yue,en")
+@click.option("--notes", help="用这个 SV 工程（.svp）或 MIDI 的音符代替转谱，比如 SV2 从主唱干声提取的；"
+                              "不给时沿用上次的，写 none 改回自动转谱")
+@click.option("--notes-track", type=int, default=None, help="--notes 的工程里有几条音轨都有音符时，用第几条（从 1 数）")
 def run(audio: Path, out: Path | None, from_stage: str | None, until: str | None,
         sets: tuple[str, ...], models: tuple[str, ...], accept_licenses: bool,
-        lyrics: Path | None, lang: str | None) -> None:
+        lyrics: Path | None, lang: str | None, notes: str | None, notes_track: int | None) -> None:
     """处理一首歌。没变的步骤直接用缓存。--out 是工程文件夹（默认 work/<文件名>），中间结果在它的 .bapu/ 里。"""
     folder = out or paths.dev_root() / "work" / jobs.slug(audio.stem)
     if project.is_project(folder):
@@ -123,6 +126,18 @@ def run(audio: Path, out: Path | None, from_stage: str | None, until: str | None
     lyrics = lyrics or jobs.stored_source(wd, "lyrics")
     if lyrics:
         sources["lyrics"] = lyrics
+    if notes and notes.lower() != "none":
+        if not Path(notes).is_file():
+            raise click.BadParameter(f"找不到文件：{notes}", param_hint="--notes")
+        try:
+            sources["notes"] = external.notes_from_file(Path(notes), wd.root / "inputs", notes_track)
+        except external.AmbiguousTrack as e:
+            lines = "\n".join(f"  {t['index']}  {t['name'] or '（没有名字）'}  {t['notes']} 个音符" for t in e.tracks)
+            raise click.ClickException(f"{e}（--notes-track N）：\n{lines}") from None
+        except external.ExternalError as e:
+            raise click.ClickException(str(e)) from None
+    elif notes is None and (stored := jobs.stored_source(wd, "notes")) is not None:
+        sources["notes"] = stored
     try:
         extra: dict[str, dict[str, Any]] = {}
         if lang:
@@ -149,6 +164,9 @@ def run(audio: Path, out: Path | None, from_stage: str | None, until: str | None
         raise click.ClickException(str(e)) from None
     click.echo(f"\n工程：{project.project_file(folder) or folder}")
     for o in outcomes:
+        if o.record is None:
+            click.echo(f"  {o.stage:<11} {'跳过':<9} 用的是你给的文件")
+            continue
         state = "缓存" if o.status == "cached" else f"{o.record.seconds:.1f} s"
         click.echo(f"  {o.stage:<11} {state:<9} {_metrics_line(o.record.metrics)}")
     if "lyrics" not in sources:
@@ -174,7 +192,7 @@ def _metrics_line(m: dict[str, Any]) -> str:
 def status(out: Path) -> None:
     """每一步是否最新、耗时和关键数字。"""
     rows = pipeline.status(_data(out), Registry.load())
-    label = {"fresh": "最新", "stale": "需重跑", "missing": "未运行"}
+    label = {"fresh": "最新", "stale": "需重跑", "missing": "未运行", "skipped": "跳过"}
     for r in rows:
         secs = f"{r['seconds']:.1f} s" if r["seconds"] is not None else "—"
         click.echo(f"{r['index']:02d} {r['stage']:<11} {label[r['state']]:<5} {secs:<9} {_metrics_line(r['metrics'])}")
@@ -182,7 +200,8 @@ def status(out: Path) -> None:
 
 @main.command()
 @click.argument("out", type=click.Path(exists=True, path_type=Path))
-@click.option("--format", "formats", default="mid,svp,paste", show_default=True, help="mid / svp / paste，逗号分隔")
+@click.option("--format", "formats", default="mid,svp,paste", show_default=True,
+              help="mid / svp / paste，逗号分隔；跑完前几步就能导的：svp-audio（只带音轨）、svp-notes（音符，没有歌词）、wav（分轨）")
 @click.option("--audio", "audio", default="accompaniment,lead_dry", show_default=True,
               help=".svp 里加哪些音频轨：accompaniment / lead_dry / none，逗号分隔")
 @click.option("--grid", type=click.Choice(["0", "8", "16", "32"]), default="0", show_default=True,

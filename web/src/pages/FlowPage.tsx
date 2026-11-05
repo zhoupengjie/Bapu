@@ -1,0 +1,573 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ApiError, api, apiUrl, follow, type StageInfo, type SvTrack } from "../api";
+import FlowGraph, { type Anchor, type NodeId, type NodeState, type NodeView, type Port, type Side, type Socket, type Wire } from "../components/FlowGraph";
+import { go, started, useJob } from "../App";
+import { desktopPick, inDesktop, revealInFolder } from "../desktop";
+import { STAGE_LABEL } from "../env";
+import { t } from "../i18n";
+import { Icon } from "../icons";
+
+// 流程: the three-node graph (分离 → 音符 → 歌词) and the selected node's panel. Every
+// node runs the pipeline up to its last step (earlier steps come from the cache), can
+// take a file in place of an input, and can save what it made next to the song.
+
+const NODE_STAGES: Record<NodeId, string[]> = {
+  separate: ["separate", "lead", "tempo"], notes: ["transcribe", "splits"], lyrics: ["dictate", "lyrics", "align", "assign"],
+};
+const NODE_LAST: Record<NodeId, string> = { separate: "tempo", notes: "splits", lyrics: "assign" };
+const LANGS = [["yue", "粤语"], ["zh", "普通话"], ["en", "英语"]] as const;
+const DEFAULT_LANGS = ["yue", "en"];
+const AUDIO = "accompaniment,lead_dry";
+const GRID_KEY = "bapu.exportGrid"; // the grid chosen on the 导出 page applies to the .svp saved here too
+const MORE_LABEL: Record<string, string> = { lead: "提取主唱", splits: "合并音符" };
+const label = (stage: string, title: string) => t(STAGE_LABEL[stage] ?? MORE_LABEL[stage] ?? title);
+
+function savedGrid(): number {
+  try {
+    const v = localStorage.getItem(GRID_KEY);
+    return v === null ? 16 : Number(v) || 0;
+  } catch {
+    return 16;
+  }
+}
+
+type Kind = "lyrics" | "notes";
+/** A chosen file: a real path (system dialog) or a file picked in the browser (uploaded). */
+type Picked = { path?: string; file?: File };
+type Live = { stage: string; fraction: number | null };
+type Written = { format: string; name: string; size: number };
+/** The menu under a clicked socket: give a file to an input, save or run for an output. */
+type Menu = { node: Port; side: Side; socket: string; anchor: Anchor };
+type Item = { label: string; primary?: boolean; disabled?: boolean; run: () => void };
+
+export default function FlowPage() {
+  const { job, refresh } = useJob();
+  const [stages, setStages] = useState<StageInfo[]>([]);
+  const [live, setLive] = useState<Live | null>(null);
+  const [selected, setSelected] = useState<NodeId | null>(null);
+  const [langs, setLangs] = useState<string[]>(() => {
+    const l = job?.params?.lyrics?.langs;
+    return Array.isArray(l) && l.length ? (l as string[]) : DEFAULT_LANGS;
+  });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [needsEnv, setNeedsEnv] = useState(false);
+  const [files, setFiles] = useState<Written[]>([]);
+  // a notes file waiting for a track choice, and the tracks to choose from
+  const [pending, setPending] = useState<Picked | null>(null);
+  const [tracks, setTracks] = useState<SvTrack[] | null>(null);
+  const [track, setTrack] = useState(1);
+  const lyricsInput = useRef<HTMLInputElement>(null);
+  const notesInput = useRef<HTMLInputElement>(null);
+  const [menu, setMenu] = useState<Menu | null>(null);
+  const menuEl = useRef<HTMLDivElement>(null);
+  const id = job?.id ?? "";
+  const enc = encodeURIComponent(id);
+
+  // the socket menu closes on Escape or a click anywhere else
+  useEffect(() => {
+    if (!menu) return;
+    const onDown = (e: MouseEvent) => {
+      const el = e.target as Element | null;
+      if (!menuEl.current?.contains(el) && !el?.closest?.(".flow-socket")) setMenu(null);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMenu(null);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [menu]);
+
+  useEffect(() => {
+    api.get<StageInfo[]>("/stages").then(setStages).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!id) return;
+    return follow(`/jobs/${enc}/events`, (ev) => {
+      if (ev.type === "progress") {
+        setLive({ stage: ev.stage as string, fraction: (ev.fraction as number | undefined) ?? null });
+        if (ev.kind === "done" || ev.kind === "skip") refresh();
+      } else if (ev.type === "state") {
+        if (ev.state !== "running") setLive(null);
+        refresh();
+      }
+    });
+  }, [id, enc, refresh]);
+
+  const act = useCallback(async (f: () => Promise<void>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await f();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  const run = useCallback((until?: string) => act(async () => {
+    setNeedsEnv(false);
+    try {
+      await api.post(`/jobs/${enc}/run`, { until, set: { lyrics: { langs }, dictate: { langs } } });
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) {
+        setNeedsEnv(true);
+        return;
+      }
+      throw e;
+    }
+    await refresh();
+  }), [act, enc, langs, refresh]);
+
+  const stop = useCallback(() => act(async () => {
+    await api.post(`/jobs/${enc}/cancel`);
+    await refresh();
+  }), [act, enc, refresh]);
+
+  const exportNow = useCallback((formats: string[]) => act(async () => {
+    const r = await api.post<{ files: Written[] }>(`/jobs/${enc}/export`, { formats, audio: AUDIO, grid: savedGrid() });
+    setFiles(r.files);
+    await refresh();
+  }), [act, enc, refresh]);
+
+  /** Send a lyrics / notes file; a 409 means several SV tracks have notes and one must be chosen. */
+  const submit = useCallback((kind: Kind, p: Picked, chosen?: number) => act(async () => {
+    const form = new FormData();
+    if (p.path) form.set(`${kind}_path`, p.path);
+    else if (p.file) form.set(kind, p.file);
+    if (chosen != null) form.set("track", String(chosen));
+    try {
+      await api.form(`/jobs/${enc}/${kind}`, form);
+    } catch (e) {
+      const list = e instanceof ApiError && e.status === 409 ? (e.detail as { tracks?: SvTrack[] } | undefined)?.tracks : undefined;
+      if (!list?.length) throw e;
+      setPending(p);
+      setTracks(list);
+      setTrack(list.find((x) => x.notes > 0)?.index ?? 1);
+      return;
+    }
+    setPending(null);
+    setTracks(null);
+    await refresh();
+  }), [act, enc, refresh]);
+
+  const pick = useCallback(async (kind: Kind) => {
+    const input = kind === "lyrics" ? lyricsInput : notesInput;
+    let path: string | null;
+    try {
+      const local = await desktopPick(kind);
+      if (local !== undefined) path = local;
+      else {
+        try {
+          path = (await api.post<{ path: string | null }>("/dialog", { kind })).path;
+        } catch {
+          input.current?.click(); // no system dialog here: the browser's picker (the file is uploaded)
+          return;
+        }
+      }
+    } catch (e) {
+      setError((e as Error).message);
+      return;
+    }
+    if (path) submit(kind, { path });
+  }, [submit]);
+
+  const clear = useCallback((kind: Kind) => act(async () => {
+    await api.del(`/jobs/${enc}/${kind}`);
+    setPending(null);
+    setTracks(null);
+    await refresh();
+  }), [act, enc, refresh]);
+
+  if (!job) return null;
+
+  // -- what the graph shows ----------------------------------------------------------------
+  const running = job.state === "running" || job.state === "queued";
+  const rowOf = (stage: string) => job.stages.find((s) => s.stage === stage);
+  const fresh = (stage: string) => rowOf(stage)?.state === "fresh";
+  const metric = (stage: string, key: string): number | string | null => {
+    const v = rowOf(stage)?.metrics?.[key];
+    return typeof v === "number" || typeof v === "string" ? v : null;
+  };
+  const nowStage = job.state === "running" ? live?.stage ?? job.stage : null;
+  const info = (name: string) => stages.find((s) => s.name === name);
+  const stepName = (name: string | null) => (name ? label(name, info(name)?.title ?? name) : "");
+
+  const nodeState = (n: NodeId): NodeState => {
+    if (nowStage && NODE_STAGES[n].includes(nowStage)) return "running";
+    if (job.state === "failed" && job.stage && NODE_STAGES[n].includes(job.stage)) return "failed";
+    const states = NODE_STAGES[n].map((s) => rowOf(s)?.state ?? "missing").filter((s) => s !== "skipped");
+    if (states.length && states.every((s) => s === "fresh")) return "done";
+    if (states.every((s) => s === "missing")) return "empty";
+    return "stale";
+  };
+  const status = (n: NodeId) => (nodeState(n) === "running" ? stepName(nowStage) : undefined);
+
+  const bpm = metric("tempo", "bpm");
+  const noteCount = metric("splits", "notes");
+  const notesFile = job.notes ? job.sources?.notes ?? job.notes.from : undefined;
+  const nodes: NodeView[] = [
+    {
+      id: "separate", title: t("分离"), steps: t("步骤 1–3"), state: nodeState("separate"), status: status("separate"),
+      inputs: [{ id: "source", label: t("原曲"), on: !!job.sources?.source, kind: "data" }],
+      outputs: [
+        { id: "lead_dry", label: t("主唱干声"), on: fresh("lead"), kind: "audio" },
+        { id: "accompaniment", label: t("伴奏"), on: fresh("separate"), kind: "audio" },
+        { id: "tempo", label: bpm != null && fresh("tempo") ? t("拍速 · {bpm}", { bpm }) : t("拍速"), on: fresh("tempo"), kind: "data" },
+      ],
+    },
+    {
+      id: "notes", title: t("音符"), steps: t("步骤 4–5"), state: nodeState("notes"), status: status("notes"),
+      inputs: [
+        { id: "lead_dry", label: t("主唱干声"), on: fresh("lead"), kind: "audio" },
+        { id: "file", label: t("音符文件"), on: !!job.notes, kind: "notes", optional: true, file: notesFile },
+      ],
+      outputs: [{ id: "notes", label: noteCount != null && fresh("splits") ? t("音符 · {n}", { n: noteCount }) : t("音符"), on: fresh("splits"), kind: "notes" }],
+    },
+    {
+      id: "lyrics", title: t("歌词"), steps: t("步骤 6–9"), state: nodeState("lyrics"), status: status("lyrics"),
+      inputs: [
+        { id: "notes", label: t("音符"), on: fresh("splits"), kind: "notes" },
+        { id: "lead_dry", label: t("主唱干声"), on: fresh("lead"), kind: "audio" },
+        { id: "tempo", label: t("拍速"), on: fresh("tempo"), kind: "data" },
+        { id: "ref", label: t("参考歌词"), on: job.has_lyrics, kind: "data", optional: true, file: job.has_lyrics ? job.sources?.lyrics : undefined },
+      ],
+      outputs: [{ id: "score", label: t("乐谱"), on: fresh("assign") && job.has_score, kind: "notes" }],
+    },
+  ];
+  // the 输入 column: the files the user gives, wired to the node inputs they feed
+  const inputs: Socket[] = [
+    { id: "source", label: t("原曲"), on: !!job.sources?.source, kind: "data", file: job.sources?.source },
+    { id: "notes", label: t("音符文件"), on: !!job.notes, kind: "notes", optional: true, file: notesFile, hint: t("SV 工程或 MIDI，代替转谱") },
+    { id: "lyrics", label: t("参考歌词"), on: job.has_lyrics, kind: "data", optional: true, file: job.has_lyrics ? job.sources?.lyrics : undefined, hint: t("字幕或歌词文件，校正听写") },
+  ];
+  const wires: Wire[] = [
+    { from: ["inputs", "source"], to: ["separate", "source"], kind: "data", on: !!job.sources?.source },
+    { from: ["inputs", "notes"], to: ["notes", "file"], kind: "notes", on: !!job.notes },
+    { from: ["inputs", "lyrics"], to: ["lyrics", "ref"], kind: "data", on: job.has_lyrics },
+    { from: ["separate", "lead_dry"], to: ["notes", "lead_dry"], kind: "audio", on: fresh("lead") },
+    { from: ["separate", "lead_dry"], to: ["lyrics", "lead_dry"], kind: "audio", on: fresh("lead") },
+    { from: ["separate", "tempo"], to: ["lyrics", "tempo"], kind: "data", on: fresh("tempo") },
+    { from: ["notes", "notes"], to: ["lyrics", "notes"], kind: "notes", on: fresh("splits") },
+  ];
+  // the node to open first: the one running, else the first that is not done, else the last
+  const current: NodeId = selected
+    ?? nodes.find((n) => n.state === "running")?.id
+    ?? nodes.find((n) => n.state !== "done")?.id
+    ?? "lyrics";
+  const node = nodes.find((n) => n.id === current)!;
+
+  // -- headline and progress -----------------------------------------------------------------
+  const active = job.stages.filter((s) => s.state !== "skipped");
+  const total = active.length || 9;
+  const freshCount = active.filter((s) => s.state === "fresh").length;
+  const at = nowStage ? active.findIndex((s) => s.stage === nowStage) : -1;
+  const fraction = live && live.stage === nowStage ? live.fraction : job.fraction;
+  const pct = Math.round((running ? (at >= 0 ? Math.min(1, (at + (fraction ?? 0)) / total) : 0) : freshCount / total) * 100);
+  const allDone = !running && active.length > 0 && freshCount === active.length;
+  let headline: string;
+  if (job.state === "queued") headline = t("排队中…");
+  else if (running) headline = nowStage ? t("正在{step}…", { step: stepName(nowStage) }) : t("准备中…");
+  else if (allDone) headline = t("处理完成");
+  else if (job.state === "failed") headline = t("处理出错了");
+  else if (job.state === "cancelled" || started(job)) headline = t("已停止");
+  else headline = t("还没开始");
+
+  const desktop = inDesktop();
+  const reveal = (name: string) => {
+    const sep = job.folder.includes("\\") ? "\\" : "/";
+    revealInFolder(`${job.folder.replace(/[\\/]+$/, "")}${sep}${name}`);
+  };
+  const toggleLang = (code: string) => {
+    const on = langs.includes(code);
+    if (on && langs.length === 1) return; // at least one stays
+    setLangs(on ? langs.filter((x) => x !== code) : [...langs, code]);
+  };
+  const yes = <span style={{ color: "var(--ok)", display: "inline-flex" }}><Icon name="check" size={16} /></span>;
+  const no = <span className="muted">{t("还没有")}</span>;
+
+  // -- what a clicked socket offers ---------------------------------------------------------------
+  const menuFor = (m: Menu): { title: string; items: Item[] } => {
+    const idle = !running && !busy;
+    const runTo = (n: NodeId, text = t("运行到这里")): Item => ({ label: text, primary: true, disabled: !idle, run: () => run(n === "lyrics" ? undefined : NODE_LAST[n]) });
+    const open: Item[] = desktop ? [{ label: t("打开文件夹"), run: () => revealInFolder(job.folder) }] : [];
+    const notYet = (what: string) => `${what} · ${t("还没有")}`;
+    const fromNode = (what: string, n: NodeId, ok: boolean) => ({
+      title: `${what} · ${t(n === "separate" ? "来自分离节点" : "来自音符节点")}`,
+      items: ok
+        ? [{ label: t(n === "separate" ? "看分离节点" : "看音符节点"), run: () => setSelected(n) }]
+        : [runTo(n, t(n === "separate" ? "运行分离" : "运行音符"))],
+    });
+    // an item of the 输入 column offers the same as the node socket it feeds
+    const COLUMN: Record<string, string> = { source: "separate/in/source", notes: "notes/in/file", lyrics: "lyrics/in/ref" };
+    const key = m.node === "inputs" ? COLUMN[m.socket] ?? m.socket : `${m.node}/${m.side}/${m.socket}`;
+    switch (key) {
+      case "separate/in/source":
+        return { title: `${t("原曲")} · ${job.sources?.source ?? "—"}`, items: open };
+      case "separate/out/lead_dry":
+      case "separate/out/accompaniment": {
+        const what = t(m.socket === "lead_dry" ? "主唱干声" : "伴奏");
+        if (!fresh("lead")) return { title: notYet(what), items: [runTo("separate")] };
+        return { title: what, items: [
+          { label: t("存 wav"), disabled: !idle, run: () => exportNow(["wav"]) },
+          { label: t("存 svp（只有音轨）"), disabled: !idle || !fresh("tempo"), run: () => exportNow(["svp-audio"]) },
+          ...open] };
+      }
+      case "separate/out/tempo":
+        if (!fresh("tempo")) return { title: notYet(t("拍速")), items: [runTo("separate")] };
+        return { title: `${t("拍速")} · ${bpm} BPM`, items: [
+          { label: t("存 svp（只有音轨）"), disabled: !idle || !fresh("lead"), run: () => exportNow(["svp-audio"]) }] };
+      case "notes/in/lead_dry":
+      case "lyrics/in/lead_dry":
+        return fromNode(t("主唱干声"), "separate", fresh("lead"));
+      case "lyrics/in/tempo":
+        return fromNode(t("拍速"), "separate", fresh("tempo"));
+      case "lyrics/in/notes":
+        return fromNode(t("音符"), "notes", fresh("splits"));
+      case "notes/in/file":
+        if (job.notes) {
+          const bits = [job.sources?.notes ?? job.notes.from];
+          if (job.notes.notes != null) bits.push(t("{n} 个音符", { n: job.notes.notes }));
+          if (job.notes.track != null) bits.push(t("第 {n} 轨", { n: job.notes.track }));
+          return { title: bits.join(" · "), items: [
+            { label: t("换一个"), disabled: !idle, run: () => pick("notes") },
+            { label: t("改回自动转谱"), disabled: !idle, run: () => clear("notes") }] };
+        }
+        return { title: t("自动转谱。也可以用 SV 工程里的音符，比如 SV2 从主唱干声提取的"),
+          items: [{ label: t("选择 SV 工程或 MIDI…"), primary: true, disabled: !idle, run: () => pick("notes") }] };
+      case "lyrics/in/ref":
+        if (job.has_lyrics) return { title: job.sources?.lyrics ?? t("参考歌词"), items: [
+          { label: t("换一个"), disabled: !idle, run: () => pick("lyrics") },
+          { label: t("去掉"), disabled: !idle, run: () => clear("lyrics") }] };
+        return { title: t("有歌词文件的话，用来校正听写的字"),
+          items: [{ label: t("选择歌词文件…"), primary: true, disabled: !idle, run: () => pick("lyrics") }] };
+      case "notes/out/notes":
+        if (!fresh("splits")) return { title: notYet(t("音符")), items: [runTo("notes")] };
+        return { title: noteCount != null ? t("{n} 个音符", { n: noteCount }) : t("音符"), items: [
+          { label: t("存 svp（音符）"), disabled: !idle || !fresh("tempo"), run: () => exportNow(["svp-notes"]) },
+          ...open] };
+      case "lyrics/out/score": {
+        if (!(fresh("assign") && job.has_score)) return { title: notYet(t("乐谱")), items: [runTo("lyrics", t("运行"))] };
+        const n = metric("assign", "notes");
+        const bits = [t("乐谱")];
+        if (n != null) bits.push(t("{n} 个音符", { n }));
+        if (job.attention != null) bits.push(t("待确认 {n} 处", { n: job.attention }));
+        return { title: bits.join(" · "), items: [
+          { label: t("检查"), primary: true, run: () => go("check") },
+          { label: t("存 svp"), disabled: !idle, run: () => exportNow(["svp"]) },
+          { label: t("存 MIDI"), disabled: !idle, run: () => exportNow(["mid"]) },
+          ...open] };
+      }
+      default:
+        return { title: key, items: [] };
+    }
+  };
+  const openMenu = (node: Port, side: Side, socket: string, anchor: Anchor) => {
+    setMenu((cur) => (cur && cur.node === node && cur.side === side && cur.socket === socket ? null : { node, side, socket, anchor }));
+  };
+  const shown = menu ? menuFor(menu) : null;
+
+  // -- the selected node's panel -----------------------------------------------------------------
+  let rows;
+  let actions;
+  let hint: string | null = null;
+  if (node.id === "separate") {
+    const conf = metric("tempo", "confidence");
+    rows = (
+      <div className="rows">
+        <div className="row"><span className="k">{t("原曲")}</span><span className="v">{job.sources?.source ?? "—"}</span></div>
+        <div className="row"><span className="k">{t("主唱干声")}</span><span className="v">{fresh("lead") ? yes : no}</span></div>
+        <div className="row"><span className="k">{t("伴奏")}</span><span className="v">{fresh("separate") ? yes : no}</span></div>
+        <div className="row"><span className="k">{t("拍速")}</span>
+          <span className="v">{fresh("tempo") && bpm != null ? <>{bpm} BPM{conf === "low" && <span className="muted"> · {t("置信度低")}</span>}</> : no}</span></div>
+      </div>
+    );
+    actions = (
+      <>
+        <button type="button" className={`btn ${node.state === "done" ? "" : "primary"}`} disabled={busy || running} onClick={() => run(NODE_LAST.separate)}>{t("运行到这里")}</button>
+        <button type="button" className="btn" disabled={busy || running || !fresh("lead")} onClick={() => exportNow(["wav"])}>{t("存 wav")}</button>
+        <button type="button" className="btn" disabled={busy || running || !fresh("lead") || !fresh("tempo")} onClick={() => exportNow(["svp-audio"])}>{t("存 svp（只有音轨）")}</button>
+        {desktop && <button type="button" className="btn" onClick={() => revealInFolder(job.folder)}>{t("打开文件夹")}</button>}
+      </>
+    );
+    hint = t("存出的 .svp 只有伴奏和主唱干声两条音轨。在 SV2 里对主唱干声提取音高、保存，再到“音符”节点把那个工程选进来。");
+  } else if (node.id === "notes") {
+    const merged = metric("splits", "auto_merged");
+    rows = (
+      <>
+        <div className="rows">
+          <div className="row"><span className="k">{t("主唱干声")}</span><span className="v">{fresh("lead") ? yes : no}</span></div>
+          <div className="row"><span className="k">{t("音符")}</span>
+            <span className="v">{fresh("splits") && noteCount != null
+              ? <>{t("{n} 个音符", { n: noteCount })}{typeof merged === "number" && merged > 0 && <span className="muted"> · {t("自动合并 {n} 处", { n: merged })}</span>}</>
+              : no}</span></div>
+        </div>
+        {job.notes ? (
+          <div className="drop slim filled">
+            <span style={{ color: "var(--accent)" }}><Icon name="music" size={20} /></span>
+            <span style={{ flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>
+              <b style={{ fontWeight: 500 }}>{job.sources?.notes ?? job.notes.from}</b>
+              <span className="muted" style={{ fontSize: 13, marginLeft: 8 }}>
+                {job.notes.notes != null && t("{n} 个音符", { n: job.notes.notes })}
+                {job.notes.track != null && ` · ${t("第 {n} 轨", { n: job.notes.track })}`}
+                {" · "}{t("转谱已跳过，用的是这个文件")}
+              </span>
+            </span>
+            <button type="button" className="link" disabled={running || busy} onClick={() => pick("notes")}>{t("换一个")}</button>
+            <button type="button" className="link" disabled={running || busy} onClick={() => clear("notes")}>{t("改回自动转谱")}</button>
+          </div>
+        ) : (
+          <button type="button" className="drop slim" disabled={running || busy} onClick={() => pick("notes")}>
+            <span className="muted"><Icon name="music" size={20} /></span>
+            <span style={{ flex: 1 }} className="muted">{t("自动转谱。也可以用 SV 工程里的音符，比如 SV2 从主唱干声提取的")}</span>
+            <span className="link">{t("选择")}</span>
+          </button>
+        )}
+        {tracks && pending && (
+          <div className="notice" style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+            <span style={{ flex: 1 }}>{t("这个工程里有几条音轨都有音符，选一条")}</span>
+            <select value={track} onChange={(e) => setTrack(Number(e.target.value))} aria-label={t("音轨")}>
+              {tracks.map((x) => (
+                <option key={x.index} value={x.index} disabled={!x.notes}>
+                  {x.index}. {x.name || t("（没有名字）")} · {t("{n} 个音符", { n: x.notes })}
+                </option>
+              ))}
+            </select>
+            <button type="button" className="btn" disabled={busy} onClick={() => submit("notes", pending, track)}>{t("用这条")}</button>
+          </div>
+        )}
+      </>
+    );
+    actions = (
+      <>
+        <button type="button" className={`btn ${node.state === "done" ? "" : "primary"}`} disabled={busy || running} onClick={() => run(NODE_LAST.notes)}>{t("运行到这里")}</button>
+        <button type="button" className="btn" disabled={busy || running || !fresh("splits") || !fresh("tempo")} onClick={() => exportNow(["svp-notes"])}>{t("存 svp（音符）")}</button>
+      </>
+    );
+    hint = t("存出的 .svp 里的音符还没有歌词（先填 la），带两条音轨，可以先在 SV 里听一遍。");
+  } else {
+    const scoreNotes = metric("assign", "notes");
+    rows = (
+      <>
+        {job.has_lyrics ? (
+          <div className="drop slim filled">
+            <span style={{ color: "var(--accent)" }}><Icon name="text" size={20} /></span>
+            <span style={{ flex: 1, minWidth: 0, overflowWrap: "anywhere" }}><b style={{ fontWeight: 500 }}>{job.sources?.lyrics ?? t("参考歌词")}</b></span>
+            <button type="button" className="link" disabled={running || busy} onClick={() => pick("lyrics")}>{t("换一个")}</button>
+            <button type="button" className="link" disabled={running || busy} onClick={() => clear("lyrics")}>{t("去掉")}</button>
+          </div>
+        ) : (
+          <button type="button" className="drop slim" disabled={running || busy} onClick={() => pick("lyrics")}>
+            <span className="muted"><Icon name="text" size={20} /></span>
+            <span style={{ flex: 1 }} className="muted">{t("有歌词文件的话，用来校正听写的字")}</span>
+            <span className="link">{t("选择")}</span>
+          </button>
+        )}
+        <div className="choices" role="group" aria-label={t("唱了哪些语言")}>
+          {LANGS.map(([code, name]) => {
+            const on = langs.includes(code);
+            return (
+              <button key={code} type="button" className={`choice ${on ? "on" : ""}`} aria-pressed={on} disabled={running || busy} onClick={() => toggleLang(code)}>
+                <span className="box" aria-hidden="true">{on ? "✓" : ""}</span>{t(name)}
+              </button>
+            );
+          })}
+        </div>
+        <div className="rows">
+          <div className="row"><span className="k">{t("乐谱")}</span>
+            <span className="v">{fresh("assign") && job.has_score
+              ? <>{scoreNotes != null && t("{n} 个音符", { n: scoreNotes })}{job.attention != null && <span className="muted"> · {t("待确认 {n} 处", { n: job.attention })}</span>}</>
+              : no}</span></div>
+        </div>
+      </>
+    );
+    actions = (
+      <>
+        <button type="button" className={`btn ${node.state === "done" ? "" : "primary"}`} disabled={busy || running} onClick={() => run()}>{t("运行")}</button>
+        <button type="button" className="btn" disabled={!job.has_score} onClick={() => go("check")}>{t("检查")}</button>
+        <button type="button" className="btn" disabled={!job.has_score} onClick={() => go("export")}>{t("导出")}</button>
+      </>
+    );
+  }
+
+  return (
+    <div className="flow">
+      <section className="card" aria-labelledby="h-flow">
+        <div className="foot">
+          <h1 id="h-flow">{headline}</h1>
+          <span style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <span className="mono" style={{ fontSize: 18 }}>{pct}%</span>
+            {running
+              ? <button type="button" className="btn" onClick={stop}>{t("停止")}</button>
+              : <button type="button" className={`btn ${allDone ? "" : "primary"}`} disabled={busy} onClick={() => run()}>{t("全部运行")}</button>}
+          </span>
+        </div>
+        <div className="bar" role="progressbar" aria-label={t("总进度")} aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}>
+          <i style={{ width: `${pct}%` }} />
+        </div>
+        {job.state === "failed" && job.error && <div className="notice bad">{t(job.error)}</div>}
+        {error && <div className="notice bad" role="alert">{t(error)}</div>}
+        {needsEnv && (
+          <div className="notice bad foot">
+            <span>{t("还缺模型")}</span>
+            <button type="button" className="btn" onClick={() => go("env")}>{t("去环境")}</button>
+          </div>
+        )}
+        <FlowGraph inputs={inputs} nodes={nodes} wires={wires} selected={current} onSelect={(n) => { if (n !== current) setFiles([]); setSelected(n); }} onSocket={openMenu}>
+          {menu && shown && (
+            <div ref={menuEl} className="pop-menu" role="menu" aria-label={shown.title}
+              style={{ left: Math.min(Math.max(menu.anchor.left, 110), Math.max(110, menu.anchor.width - 110)), top: menu.anchor.top }}>
+              <div className="title">{shown.title}</div>
+              {shown.items.map((it) => (
+                <button key={it.label} type="button" role="menuitem" className={it.primary ? "primary" : ""} disabled={it.disabled}
+                  onClick={() => { setMenu(null); it.run(); }}>
+                  {it.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </FlowGraph>
+      </section>
+
+      <section className="card sec" aria-label={node.title} style={{ gap: 14 }}>
+        <div>
+          <h1 style={{ fontSize: 18 }}>{node.title}</h1>
+          <p className="lead" style={{ fontSize: 14 }}>
+            {node.id === "separate" ? t("分离原曲，得到主唱干声、伴奏和拍速。") : node.id === "notes" ? t("从主唱干声转出音符，再把切开的音符合并。") : t("听写、对齐，把每个字放到音符上。")}
+          </p>
+        </div>
+        {rows}
+        <div className="actions">{actions}</div>
+        {hint && <p className="muted" style={{ fontSize: 13, margin: 0 }}>{hint}</p>}
+        {files.length > 0 && (
+          <div className="files">
+            {files.map((f) => (
+              <div key={f.name}>
+                <a href={apiUrl(`/jobs/${enc}/export/${encodeURIComponent(f.name)}`)} download style={{ minWidth: 0, overflowWrap: "anywhere" }}>{f.name}</a>
+                {desktop
+                  ? <button type="button" className="link" onClick={() => reveal(f.name)}><Icon name="folder" size={16} /> {t("打开文件夹")}</button>
+                  : <span className="muted" style={{ fontSize: 13 }}>{t("已存到原曲旁边")}</span>}
+              </div>
+            ))}
+          </div>
+        )}
+        <input ref={lyricsInput} type="file" accept=".ass,.ssa,.lrc,.txt" hidden onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) submit("lyrics", { file: f });
+          e.target.value = "";
+        }} />
+        <input ref={notesInput} type="file" accept=".svp,.mid,.midi" hidden onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) submit("notes", { file: f });
+          e.target.value = "";
+        }} />
+      </section>
+    </div>
+  );
+}

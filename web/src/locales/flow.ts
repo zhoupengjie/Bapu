@@ -1,0 +1,36 @@
+// Translations of the Simplified Chinese source strings (see i18n.ts): the 流程 page and its graph.
+export default {
+  en: {
+    "流程": "Flow", "流程图": "Flow graph", "输入": "Inputs", "输出": "Outputs", "可选": "optional",
+    "点一下选文件": "Click to choose a file", "SV 工程或 MIDI，代替转谱": "SV project or MIDI, in place of the transcription",
+    "字幕或歌词文件，校正听写": "Subtitle or lyrics file, corrects the dictation",
+    "要重算": "Needs rerun", "已算好": "Done", "运行中": "Running", "出错了": "Failed",
+    "步骤 1–3": "Steps 1–3", "步骤 4–5": "Steps 4–5", "步骤 6–9": "Steps 6–9",
+    "分离": "Separation", "音符": "Notes", "歌词": "Lyrics", "原曲": "Song", "主唱干声": "Dry lead", "伴奏": "Accompaniment",
+    "拍速": "Tempo", "拍速 · {bpm}": "Tempo · {bpm}", "音符 · {n}": "Notes · {n}", "音符文件": "Notes file", "参考歌词": "Reference lyrics", "乐谱": "Score",
+    "全部运行": "Run all", "运行到这里": "Run up to here", "运行": "Run", "停止": "Stop", "检查": "Check", "导出": "Export",
+    "存 wav": "Save wav", "存 svp（只有音轨）": "Save svp (audio only)", "存 svp（音符）": "Save svp (notes)", "打开文件夹": "Show in folder",
+    "分离原曲，得到主唱干声、伴奏和拍速。": "Separates the song into the dry lead, the accompaniment and the tempo.",
+    "从主唱干声转出音符，再把切开的音符合并。": "Transcribes the dry lead into notes and merges split ones.",
+    "听写、对齐，把每个字放到音符上。": "Dictates, aligns and puts every word on its note.",
+    "存出的 .svp 只有伴奏和主唱干声两条音轨。在 SV2 里对主唱干声提取音高、保存，再到“音符”节点把那个工程选进来。":
+      "The saved .svp holds only the accompaniment and dry-lead tracks. Extract the pitch from the dry lead in SV2, save, then choose that project at the Notes node.",
+    "存出的 .svp 里的音符还没有歌词（先填 la），带两条音轨，可以先在 SV 里听一遍。":
+      "The saved .svp has the notes without lyrics (la for now) plus the two audio tracks, so you can listen in SV first.",
+    "自动转谱。也可以用 SV 工程里的音符，比如 SV2 从主唱干声提取的": "Automatic transcription. Or use the notes of an SV project, e.g. ones SV2 extracted from the dry lead",
+    "转谱已跳过，用的是这个文件": "Transcription skipped: this file is used instead",
+    "改回自动转谱": "Back to automatic transcription", "{n} 个音符": "{n} notes", "第 {n} 轨": "track {n}",
+    "自动合并 {n} 处": "{n} auto merges", "待确认 {n} 处": "{n} to check",
+    "这个工程里有几条音轨都有音符，选一条": "Several tracks in this project have notes; pick one",
+    "（没有名字）": "(unnamed)", "用这条": "Use this track", "音轨": "Track",
+    "有歌词文件的话，用来校正听写的字": "If you have a lyrics file, it corrects the dictated words",
+    "选择": "Choose", "换一个": "Change", "去掉": "Remove", "唱了哪些语言": "Languages sung", "粤语": "Cantonese", "普通话": "Mandarin", "英语": "English",
+    "还没有": "Not yet", "置信度低": "low confidence", "还缺模型": "Models missing", "去环境": "Go to Setup",
+    "来自分离节点": "from the Separation node", "来自音符节点": "from the Notes node", "看分离节点": "Show the Separation node",
+    "看音符节点": "Show the Notes node", "运行分离": "Run the separation", "运行音符": "Run the notes",
+    "选择 SV 工程或 MIDI…": "Choose an SV project or MIDI…", "选择歌词文件…": "Choose a lyrics file…", "存 svp": "Save svp", "存 MIDI": "Save MIDI",
+    "排队中…": "Queued…", "正在{step}…": "{step}…", "准备中…": "Preparing…", "处理完成": "Done",
+    "处理出错了": "Processing failed", "已停止": "Stopped", "还没开始": "Not started", "总进度": "Overall progress",
+    "导出中…": "Exporting…", "已存到原曲旁边": "Saved next to the song",
+  } as Record<string, string>,
+};

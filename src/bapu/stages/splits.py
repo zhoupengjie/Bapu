@@ -147,6 +147,9 @@ STAGE = Stage(
     # boundary up scores 0.080 (notes §5). Below 0.078 every auto merge is still
     # flagged for review; corrections confirm or reject single boundaries.
     defaults={"threshold": 0.078, "sample_rate": 44100, "tolerance": 0.03},
+    # Notes from an SV project are not split the way SOME splits them: no
+    # automatic merges, only the user's; the boundary scores are still measured.
+    external_defaults={"notes": {"threshold": 0.0}},
     corrections=("merge",),
     run=_run,
 )

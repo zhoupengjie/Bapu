@@ -1,17 +1,19 @@
 """Run the stages in order, skipping those whose cache key has not changed.
 
-Sources are the user's files (`source` = the recording, `lyrics` = the lyric
-file). A stage whose inputs are not available (no lyrics given yet) ends the
-run there.
+Sources are the user's files: `source` (the recording), `lyrics` (the lyric
+file) and, optionally, artifacts the user supplies in place of a stage's output
+(`notes` from an SV project, see bapu.external). A stage whose downstream
+outputs are all supplied that way is skipped; a stage whose inputs are not
+available (no lyrics given yet) ends the run there.
 """
 
 from __future__ import annotations
 
 import shutil
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Iterable, Sequence
 
 from bapu import corrections as corr
 from bapu.audio import sha256_file
@@ -29,8 +31,14 @@ class PipelineError(Exception):
 @dataclass
 class Outcome:
     stage: str
-    status: str  # "ran" | "cached"
-    record: StageRecord
+    status: str  # "ran" | "cached" | "skipped" (its output came from the user)
+    record: StageRecord | None
+
+
+@dataclass
+class Plan:
+    keys: dict[str, str] = field(default_factory=dict)  # stages that run, with their cache keys
+    skipped: list[str] = field(default_factory=list)  # stages replaced by a user-supplied artifact
 
 
 def find_stage(name: str, stages: Sequence[Stage] = STAGES) -> Stage:
@@ -40,8 +48,11 @@ def find_stage(name: str, stages: Sequence[Stage] = STAGES) -> Stage:
     raise PipelineError(f"没有叫 {name} 的步骤；可用：{', '.join(s.name for s in stages)}")
 
 
-def resolve_params(stage: Stage, overrides: dict[str, Any] | None) -> dict[str, Any]:
+def resolve_params(stage: Stage, overrides: dict[str, Any] | None, external: Iterable[str] = ()) -> dict[str, Any]:
+    """Defaults, then the stage's defaults for user-supplied inputs, then the overrides."""
     params = dict(stage.defaults)
+    for name in external:
+        params.update(stage.external_defaults.get(name, {}))
     for k, v in (overrides or {}).items():
         if k not in params:
             raise PipelineError(f"{stage.name} 没有参数 {k}；可用：{', '.join(params)}")
@@ -73,18 +84,29 @@ def load_corrections(workdir: WorkDir) -> list[dict[str, Any]]:
         raise PipelineError(str(e)) from None
 
 
-def plan_keys(
+def supplied(stage: Stage, external: set[str], stages: Sequence[Stage] = STAGES) -> bool:
+    """True when every output of `stage` that a later stage reads is a user-supplied artifact."""
+    consumed = {o for o in stage.outputs if any(o in s.inputs for s in stages if s.index > stage.index)}
+    return bool(consumed) and consumed <= external
+
+
+def plan(
     source_fps: dict[str, str],
     overrides: dict[str, dict[str, Any]],
     entries: list[dict[str, Any]] | None = None,
     stages: Sequence[Stage] = STAGES,
-) -> dict[str, str]:
+) -> Plan:
     """Cache key of every stage whose inputs are available, chained through
-    upstream keys. Stops at the first stage that lacks an input."""
+    upstream keys; stops at the first stage that lacks an input. Stages whose
+    outputs the user supplied are listed as skipped instead."""
     fps = dict(source_fps)
-    keys: dict[str, str] = {}
+    external = set(source_fps)
+    out = Plan()
     for st in stages:
-        params = resolve_params(st, overrides.get(st.name))
+        if supplied(st, external, stages):
+            out.skipped.append(st.name)
+            continue
+        params = resolve_params(st, overrides.get(st.name), external & set(st.inputs))
         if any(n not in fps for n in st.inputs if n not in st.optional_inputs):
             break
         payload: dict[str, Any] = {
@@ -94,10 +116,19 @@ def plan_keys(
         if st.corrections:
             payload["corrections"] = corr.fingerprint(corr.select(entries or [], st.corrections))
         key = cache_key(payload)
-        keys[st.name] = key
+        out.keys[st.name] = key
         for o in st.outputs:
             fps[o] = f"{key}:{o}"
-    return keys
+    return out
+
+
+def plan_keys(
+    source_fps: dict[str, str],
+    overrides: dict[str, dict[str, Any]],
+    entries: list[dict[str, Any]] | None = None,
+    stages: Sequence[Stage] = STAGES,
+) -> dict[str, str]:
+    return plan(source_fps, overrides, entries, stages).keys
 
 
 def run(
@@ -126,9 +157,10 @@ def run(
     workdir.root.mkdir(parents=True, exist_ok=True)
     workdir.set_sources({name: (p, fps[name]) for name, p in sources.items()})
     entries = load_corrections(workdir)
-    keys = plan_keys(fps, overrides, entries, stages)
+    planned = plan(fps, overrides, entries, stages)
+    keys, skipped = planned.keys, set(planned.skipped)
     if last is not None:
-        blocked = [s.name for s in stages if s.index <= last and s.name not in keys]
+        blocked = [s.name for s in stages if s.index <= last and s.name not in keys and s.name not in skipped]
         if blocked:
             raise PipelineError(f"{blocked[0]} 缺少输入")
 
@@ -136,11 +168,17 @@ def run(
     outcomes: list[Outcome] = []
     forced = False
     for st in stages:
-        if (last is not None and st.index > last) or st.name not in keys:
+        if last is not None and st.index > last:
             break
         if st.name == from_stage:
             forced = True
-        params = resolve_params(st, overrides.get(st.name))
+        if st.name in skipped:
+            progress(ProgressEvent(st.name, "skip", message="用的是你给的文件"))
+            outcomes.append(Outcome(st.name, "skipped", None))
+            continue
+        if st.name not in keys:
+            break
+        params = resolve_params(st, overrides.get(st.name), set(sources) & set(st.inputs))
         models = resolve_models(st, params, registry)
         key = keys[st.name]
 
@@ -185,24 +223,31 @@ def run(
     return outcomes
 
 
-def status(workdir: WorkDir, registry: Registry, stages: Sequence[Stage] = STAGES) -> list[dict[str, Any]]:
-    """Per-stage state for `bapu status`: fresh / stale / missing."""
-    srcs = workdir.sources()
+def status(workdir: WorkDir, registry: Registry, stages: Sequence[Stage] = STAGES,
+           sources: dict[str, Path] | None = None) -> list[dict[str, Any]]:
+    """Per-stage state for `bapu status`: fresh / stale / missing / skipped.
+    `sources`: the files the next run would use (default: the last run's)."""
+    if sources is None:
+        srcs = {n: Path(p) for n, (p, _) in workdir.sources().items()}
+    else:
+        srcs = {n: Path(p) for n, p in sources.items()}
     overrides = workdir.load_params()
-    keys: dict[str, str] = {}
-    if "source" in srcs and all(Path(p).exists() for p, _ in srcs.values()):
-        fps = {n: sha256_file(Path(p)) for n, (p, _) in srcs.items()}
-        keys = plan_keys(fps, overrides, load_corrections(workdir), stages)
+    planned = Plan()
+    if "source" in srcs and all(p.exists() for p in srcs.values()):
+        fps = {n: sha256_file(p) for n, p in srcs.items()}
+        planned = plan(fps, overrides, load_corrections(workdir), stages)
     rows = []
     for st in stages:
         rec = workdir.get(st.name)
-        if rec is None:
+        if st.name in planned.skipped:
+            state = "skipped"
+        elif rec is None:
             state = "missing"
-        elif st.name in keys and workdir.fresh(st.name, keys[st.name]) is not None:
+        elif st.name in planned.keys and workdir.fresh(st.name, planned.keys[st.name]) is not None:
             state = "fresh"
         else:
             state = "stale"
         rows.append({"stage": st.name, "title": st.title, "index": st.index, "state": state,
                      "seconds": rec.seconds if rec else None, "metrics": rec.metrics if rec else {},
-                     "params": rec.params if rec else resolve_params(st, overrides.get(st.name))})
+                     "params": rec.params if rec else resolve_params(st, overrides.get(st.name), set(srcs) & set(st.inputs))})
     return rows

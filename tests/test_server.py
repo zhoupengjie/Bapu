@@ -143,6 +143,13 @@ def test_upload_creates_inputs_and_lyrics_are_used(env):
         out = svc.root / job["id"] / ".bapu" / "02_slow" / "y.txt"  # intermediate files live in .bapu/
         assert out.read_text(encoding="utf-8") == "audio-bytes天空"
 
+        # dropping the lyrics: the last run's copy is not picked up again
+        d = client.delete(f"/api/jobs/{job['id']}/lyrics").json()
+        assert d["has_lyrics"] is False and [s["state"] for s in d["stages"]] == ["fresh", "stale"]
+        client.post(f"/api/jobs/{job['id']}/run", json={})
+        assert wait_state(client, job["id"])["state"] == "done"
+        assert out.read_text(encoding="utf-8") == "audio-bytes"
+
 
 def test_conflicts_and_bad_ids(env):
     svc, audio = env(delay=0.05)
@@ -301,3 +308,75 @@ def test_save_project_and_network_load(env):
         assert client.get(f"/api/jobs/{job['id']}").json()["project_file"]
         net = client.get("/api/system/load").json()["net"]
         assert net["up"] >= 0 and net["down"] >= 0
+
+
+def notes_stages():
+    """A transcription-like pair: `first` makes notes, `second` reads them."""
+    def first(ctx: StageContext) -> StageResult:
+        p = ctx.out_dir / "notes.json"
+        p.write_text(json.dumps({"notes": [{"start": 0.0, "dur": 1.0, "pitch": 60}]}))
+        return StageResult({"notes": p})
+
+    def second(ctx: StageContext) -> StageResult:
+        p = ctx.out_dir / "y.txt"
+        p.write_text(f"{len(json.loads(ctx.inputs['notes'].read_text())['notes'])}|{ctx.params['threshold']}")
+        return StageResult({"y": p})
+
+    return (
+        Stage("first", 1, "1", ("source",), ("notes",), {}, first, title="转谱"),
+        Stage("second", 2, "1", ("notes",), ("y",), {"threshold": 0.5}, second, title="合并",
+              external_defaults={"notes": {"threshold": 0.0}}),
+    )
+
+
+def svp_file(tmp_path: Path, name: str, tracks: list[tuple[str, int]]) -> Path:
+    """An .svp with one note track per (name, note count) (no lyrics)."""
+    q = 705_600_000
+    out = []
+    for name_, n in tracks:
+        notes = [{"onset": k * q, "duration": q // 2, "pitch": 60 + k, "lyrics": ""} for k in range(n)]
+        out.append({"name": name_, "mainGroup": {"notes": notes}, "mainRef": {"blickOffset": 0, "pitchOffset": 0}, "groups": []})
+    p = tmp_path / name
+    p.write_bytes(json.dumps({"version": 203, "time": {"meter": [], "tempo": [{"position": 0, "bpm": 120.0}]},
+                              "library": [], "tracks": out}).encode("utf-8") + b"\x00")
+    return p
+
+
+def test_notes_from_an_sv_project_replace_the_transcription(env, tmp_path):
+    svc, audio = env()
+    svc.stages = notes_stages()
+    with TestClient(create_app(svc)) as client:
+        job = client.post("/api/jobs", data={"audio_path": str(audio), "name": "N"}).json()
+        client.post(f"/api/jobs/{job['id']}/run", json={})
+        d = wait_state(client, job["id"])
+        assert [s["state"] for s in d["stages"]] == ["fresh", "fresh"] and d["notes"] is None
+        assert (svc.root / job["id"] / ".bapu" / "02_second" / "y.txt").read_text() == "1|0.5"
+
+        # two tracks with notes: the service asks which one
+        two = svp_file(tmp_path, "two.svp", [("Bapu vocal", 1), ("extracted", 3)])
+        r = client.post(f"/api/jobs/{job['id']}/notes", data={"notes_path": str(two)})
+        assert r.status_code == 409, r.text
+        assert [(t["index"], t["notes"]) for t in r.json()["detail"]["tracks"]] == [(1, 1), (2, 3)]
+        r = client.post(f"/api/jobs/{job['id']}/notes", data={"notes_path": str(two), "track": "2"})
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert d["has_notes"] and d["sources"]["notes"] == "two.svp" and d["notes"]["notes"] == 3 and d["notes"]["track"] == 2
+        assert [s["state"] for s in d["stages"]] == ["skipped", "stale"]
+        assert client.get("/api/jobs").json()[0]["has_notes"] is True
+
+        client.post(f"/api/jobs/{job['id']}/run", json={})
+        d = wait_state(client, job["id"])
+        assert d["state"] == "done" and [s["state"] for s in d["stages"]] == ["skipped", "fresh"]
+        assert (svc.root / job["id"] / ".bapu" / "02_second" / "y.txt").read_text() == "3|0.0"
+        assert (svc.root / job["id"] / ".bapu" / "inputs" / "two.notes.json").exists()
+
+        # a single-track file needs no choice; a bad one is a plain error
+        one = svp_file(tmp_path, "one.svp", [("extracted", 2)])
+        assert client.post(f"/api/jobs/{job['id']}/notes", data={"notes_path": str(one)}).json()["notes"]["notes"] == 2
+        assert client.post(f"/api/jobs/{job['id']}/notes", data={"notes_path": str(tmp_path / "missing.svp")}).status_code == 400
+        assert client.post(f"/api/jobs/{job['id']}/notes", data={}).status_code == 400
+
+        # back to the automatic transcription: its earlier result is still cached
+        d = client.delete(f"/api/jobs/{job['id']}/notes").json()
+        assert not d["has_notes"] and d["notes"] is None
+        assert [s["state"] for s in d["stages"]] == ["fresh", "stale"]

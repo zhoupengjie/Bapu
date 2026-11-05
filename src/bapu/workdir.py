@@ -31,15 +31,31 @@ def cache_key(payload: dict[str, Any]) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
+def retry_locked(fn, attempts: int = 8, wait: float = 0.05):
+    """Windows: a file being replaced (or held by antivirus / the indexer) refuses
+    to open for a moment; try again a few times before giving up."""
+    for k in range(attempts):
+        try:
+            return fn()
+        except PermissionError:
+            if k == attempts - 1:
+                raise
+            time.sleep(wait)
+
+
+def read_text(path: Path) -> str:
+    return retry_locked(lambda: Path(path).read_text(encoding="utf-8"))
+
+
 def write_json_atomic(path: Path, data: Any) -> None:
     """Write via a temp file; leave the file (and its mtime) alone when the content is unchanged."""
     text = json.dumps(data, ensure_ascii=False, indent=2)
-    if path.exists() and path.read_text(encoding="utf-8") == text:
+    if path.exists() and read_text(path) == text:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+    retry_locked(lambda: os.replace(tmp, path))
 
 
 @dataclass
@@ -64,7 +80,7 @@ class WorkDir:
     # -- manifest ---------------------------------------------------------
     def load(self) -> dict[str, Any]:
         if self.manifest_path.exists():
-            data = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+            data = json.loads(read_text(self.manifest_path))
             if data.get("version") == 1:  # v1 had a single "source"
                 src = data.pop("source", None)
                 data["sources"] = {"source": src} if src else {}

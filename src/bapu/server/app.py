@@ -46,7 +46,7 @@ class CorrectionsBody(BaseModel):
 
 
 class ExportBody(BaseModel):
-    formats: list[str] = list(jobs.EXPORT_FORMATS)
+    formats: list[str] = list(jobs.EXPORT_FORMATS)  # plus svp-audio / svp-notes / wav from the earlier steps
     audio: str = "accompaniment,lead_dry"
     grid: int = 0  # 8 / 16 / 32: line up with SV's grid and snap the notes; 0: as transcribed
 
@@ -230,6 +230,32 @@ def create_app(service: JobService, static_dir: Path | None = None) -> FastAPI:
             service.set_input(job_id, "lyrics", Path(lyrics_path))
         else:
             raise ServiceError("需要歌词文件：上传或给出 lyrics_path")
+        return service.detail(job_id)
+
+    @app.delete("/api/jobs/{job_id}/lyrics")
+    def clear_lyrics(job_id: str) -> dict[str, Any]:
+        """Lyrics from the dictation alone again."""
+        service.clear_input(job_id, "lyrics")
+        return service.detail(job_id)
+
+    @app.post("/api/jobs/{job_id}/notes")
+    async def set_notes(job_id: str, notes: UploadFile | None = File(None), notes_path: str = Form(""),
+                        track: int | None = Form(None)) -> dict[str, Any]:
+        """Use the notes of an SV project (.svp) or a MIDI file instead of the
+        transcription. `track`: which SV track, when more than one has notes
+        (a 409 lists them)."""
+        if notes is not None:
+            service.save_upload(job_id, "notes", notes.filename or "notes.svp", await notes.read(), track)
+        elif notes_path:
+            service.set_input(job_id, "notes", Path(notes_path), track)
+        else:
+            raise ServiceError("需要音符文件：上传或给出 notes_path")
+        return service.detail(job_id)
+
+    @app.delete("/api/jobs/{job_id}/notes")
+    def clear_notes(job_id: str) -> dict[str, Any]:
+        """Back to the automatic transcription."""
+        service.clear_input(job_id, "notes")
         return service.detail(job_id)
 
     # -- projects ----------------------------------------------------------------------------

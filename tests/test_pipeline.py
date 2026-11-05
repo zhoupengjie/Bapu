@@ -139,3 +139,30 @@ def test_status_reports_stale_after_param_change(env):
     wd.save_params({"c": {}, "b": {"k": 5}})
     states = {r["stage"]: r["state"] for r in pipeline.status(wd, reg, stages)}
     assert states == {"a": "fresh", "b": "stale", "c": "stale"}
+
+
+def test_user_supplied_artifact_skips_its_stage(env, tmp_path):
+    """`x` given as a source: stage a is skipped, b runs on the file with its
+    external defaults, and status reports the skip."""
+    wd, src, reg, calls, stages = env
+    stages = (stages[0],
+              Stage("b", 2, "1", ("x",), ("y",), {"k": 1, "model": "algo-a"}, stages[1].run,
+                    model_params={"model": "b"}, external_defaults={"x": {"k": 7}}),
+              stages[2])
+    x = tmp_path / "given.txt"
+    x.write_text("given")
+    out = pipeline.run(wd, {"source": src, "x": x}, registry=reg, stages=stages)
+    assert [(o.stage, o.status) for o in out] == [("a", "skipped"), ("b", "ran"), ("c", "ran")]
+    assert calls == ["b", "c"]
+    assert (wd.root / "03_c" / "c.txt").read_text() == "given|b7|c"
+    states = {r["stage"]: r["state"] for r in pipeline.status(wd, reg, stages)}
+    assert states == {"a": "skipped", "b": "fresh", "c": "fresh"}
+    # an explicit override still wins over the external default
+    out = pipeline.run(wd, {"source": src, "x": x}, registry=reg, stages=stages, overrides={"b": {"k": 2}})
+    assert [o.status for o in out] == ["skipped", "ran", "ran"]
+    assert (wd.root / "03_c" / "c.txt").read_text() == "given|b2|c"
+    # without the file, stage a runs again (its old record is simply missing)
+    calls.clear()
+    out = pipeline.run(wd, {"source": src}, registry=reg, stages=stages)
+    assert calls == ["a", "b", "c"]
+    assert pipeline.status(wd, reg, stages, {"source": src, "x": x})[0]["state"] == "skipped"

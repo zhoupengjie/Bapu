@@ -207,3 +207,25 @@ input, select, textarea { font: inherit; color: inherit; }
 html[lang="en"] .dl { grid-template-columns: 18px 128px minmax(0, 1fr) 200px; }
 html[lang="en"] .row .k { width: 128px; }
 @media (max-width: 600px) { html[lang="en"] .dl { grid-template-columns: 18px minmax(0, 1fr) auto; } }
+
+/* flow: the node graph and the selected node's panel */
+.flow { display: flex; flex-direction: column; gap: 16px; max-width: 880px; }
+.flow .card { display: flex; flex-direction: column; gap: 14px; }
+.flow-graph { display: block; width: 100%; height: auto; }
+.flow-graph text { font-family: var(--sans); }
+.flow-node { cursor: pointer; }
+.flow-node:hover > rect:first-of-type { stroke: var(--accent); }
+.flow-node:focus-visible { outline: none; }
+.flow-node:focus-visible > rect:first-of-type { stroke: var(--accent); stroke-width: 2; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.flow-canvas { position: relative; }
+.flow-socket { cursor: pointer; }
+.flow-socket:hover circle, .flow-socket:focus-visible circle { stroke-width: 3; }
+.flow-socket:hover text, .flow-socket:focus-visible text { fill: var(--accent-text); }
+.flow-socket:focus, .flow-socket:focus-visible, .flow-node:focus { outline: none; }
+.pop-menu { position: absolute; z-index: 5; transform: translateX(-50%); min-width: 200px; max-width: 280px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 6px; display: flex; flex-direction: column; gap: 2px; }
+.pop-menu .title { font-size: 12.5px; color: var(--muted); padding: 4px 10px 6px; overflow-wrap: anywhere; }
+.pop-menu button { border: 0; background: transparent; text-align: left; padding: 8px 10px; border-radius: 8px; font-size: 13.5px; display: flex; align-items: center; gap: 8px; }
+.pop-menu button:hover { background: var(--surface-2); }
+.pop-menu button.primary { color: var(--accent-text); font-weight: 500; }
+.pop-menu button[disabled] { opacity: .4; cursor: not-allowed; }

@@ -132,8 +132,9 @@ def read(folder: Path) -> dict[str, Any]:
         if not meta.get("sources") and inputs.is_dir():  # never run: the copied inputs tell what it was
             files = sorted(f for f in inputs.iterdir() if f.is_file())
             lyrics = [f for f in files if f.suffix.lower() in (".ass", ".ssa", ".lrc", ".txt")]
-            audio = [f for f in files if f not in lyrics]
-            meta["sources"] = {k: str(v[0]) for k, v in (("source", audio), ("lyrics", lyrics)) if v}
+            notes = [f for f in files if f.name.endswith(".notes.json")]
+            audio = [f for f in files if f not in lyrics and f.suffix.lower() not in (".json", ".svp", ".mid", ".midi")]
+            meta["sources"] = {k: str(v[0]) for k, v in (("source", audio), ("lyrics", lyrics), ("notes", notes)) if v}
             if audio:
                 meta["name"] = audio[0].stem
     meta["sources"] = {n: str((folder / p).resolve()) for n, p in (meta.get("sources") or {}).items()}

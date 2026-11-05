@@ -17,6 +17,7 @@ KINDS = {
     "audio": ("选择原曲", [("音频或视频", "*.wav *.flac *.mp3 *.m4a *.aac *.ogg *.opus *.mp4 *.mov *.mkv *.webm"),
                           ("所有文件", "*.*")]),
     "lyrics": ("选择参考歌词", [("字幕或歌词", "*.ass *.ssa *.lrc *.txt"), ("所有文件", "*.*")]),
+    "notes": ("选择 SV 工程或 MIDI", [("SV 工程或 MIDI", "*.svp *.mid *.midi"), ("所有文件", "*.*")]),
     "project": ("打开 Bapu 工程", [("Bapu 工程", "*.bapu")]),
     "folder": ("选择工程文件夹", None),
 }
@@ -46,7 +47,7 @@ class DialogError(RuntimeError):
 
 
 def ask(kind: str, initial: str | None = None) -> str | None:
-    """Show the dialog for `kind` (audio / lyrics / project / folder); the chosen path or None."""
+    """Show the dialog for `kind` (audio / lyrics / notes / project / folder); the chosen path or None."""
     if kind not in KINDS:
         raise DialogError(f"没有这种对话框：{kind}")
     title, types = KINDS[kind]

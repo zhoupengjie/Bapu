@@ -48,3 +48,6 @@ class Stage:
     corrections: tuple[str, ...] = ()
     # inputs the stage can run without (e.g. the reference lyric file)
     optional_inputs: tuple[str, ...] = ()
+    # input name -> parameter values used when the user supplied that input
+    # instead of the stage that normally makes it (see bapu.external)
+    external_defaults: dict[str, dict[str, Any]] = field(default_factory=dict)

@@ -189,7 +189,7 @@ export default function EnvPage() {
         <h1 id="h-env">{t("环境就绪")}</h1>
         {device && <p className="lead">{t("用 {device} 推理", { device })}</p>}
       </div>
-      <button type="button" className="btn primary" onClick={() => go("import")}>{t("下一步")}</button>
+      <button type="button" className="btn primary" onClick={() => go("flow")}>{t("下一步")}</button>
     </>;
   } else {
     const left = sum(todo, (r) => Math.max(0, r.size - r.got));

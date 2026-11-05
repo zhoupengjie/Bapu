@@ -151,8 +151,8 @@ export default function ImportPage() {
     } catch (e) {
       carried = (e as Error).message;
     }
-    open(created.id); // the page remounts on the new project
-    go(carried ? "import" : "run");
+    open(created.id); // the flow page takes over on the new project
+    go("flow");
   }
 
   async function act(f: () => Promise<void>) {
@@ -178,7 +178,7 @@ export default function ImportPage() {
     }
     await runJob(job.id);
     await refresh();
-    go("run");
+    go("flow");
   });
 
   const openTaken = () => act(async () => {
@@ -196,7 +196,7 @@ export default function ImportPage() {
   const newProject = () => {
     if (job?.state === "running" && !window.confirm(t("这个工程还在处理，离开后它会在后台继续跑完。确定吗？"))) return;
     open(null);
-    go("import");
+    go("flow");
   };
 
   const toggle = (id: string) => {

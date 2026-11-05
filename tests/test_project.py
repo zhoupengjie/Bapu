@@ -159,7 +159,7 @@ def test_new_project_where_the_bapu_file_was_removed(env, tmp_path):
         other.write_text("another song")
         third = client.post("/api/jobs", data={"audio_path": str(other), "folder": str(folder)})
         assert third.status_code == 201, third.text
-        assert third.json()["stages"] == []  # a fresh start: nothing has run yet
+        assert [s["state"] for s in third.json()["stages"]] == ["missing", "missing"]  # a fresh start: nothing has run yet
         old = [p.name for p in folder.iterdir() if p.name.startswith(".bapu-old-")]
         assert len(old) == 1 and (folder / old[0] / "manifest.json").exists()  # kept, not deleted
 

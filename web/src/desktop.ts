@@ -17,12 +17,13 @@ type TauriGlobal = {
 const tauri = (): TauriGlobal | null => (window as unknown as { __TAURI__?: TauriGlobal }).__TAURI__ ?? null;
 export const inDesktop = () => tauri() !== null;
 
-export type PickKind = "audio" | "lyrics" | "project" | "folder";
+export type PickKind = "audio" | "lyrics" | "notes" | "project" | "folder";
 const KINDS: Record<PickKind, { title: string; filters?: Filter[] }> = {
   audio: { title: "选择原曲", filters: [
     { name: "音频或视频", extensions: ["wav", "flac", "mp3", "m4a", "aac", "ogg", "opus", "mp4", "mov", "mkv", "webm"] },
     { name: "所有文件", extensions: ["*"] }] },
   lyrics: { title: "选择参考歌词", filters: [{ name: "字幕或歌词", extensions: ["ass", "ssa", "lrc", "txt"] }, { name: "所有文件", extensions: ["*"] }] },
+  notes: { title: "选择 SV 工程或 MIDI", filters: [{ name: "SV 工程或 MIDI", extensions: ["svp", "mid", "midi"] }, { name: "所有文件", extensions: ["*"] }] },
   project: { title: "打开 Bapu 工程", filters: [{ name: "Bapu 工程", extensions: ["bapu"] }] },
   folder: { title: "选择工程文件夹" },
 };
