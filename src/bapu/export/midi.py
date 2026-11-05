@@ -46,19 +46,13 @@ def _track(notes: list[dict[str, Any]], bpm: float, tpb: int, name: str, meta: l
     return tr
 
 
-def write(score: dict[str, Any], path: Path, *, track_name: str = "Bapu vocal", tpb: int = TPB,
-          harmony: bool = True) -> Path:
-    """Lead on track 1. With `harmony` and harmony notes, a type-1 file with
-    the harmony on track 2 (pick the track when importing)."""
+def write(score: dict[str, Any], path: Path, *, track_name: str = "Bapu vocal", tpb: int = TPB) -> Path:
     bpm = float(score["tempo"]["bpm"])
     num, den = (int(x) for x in str(score["tempo"].get("time_signature", "4/4")).split("/"))
     meta = [mido.MetaMessage("set_tempo", tempo=mido.bpm2tempo(bpm), time=0),
             mido.MetaMessage("time_signature", numerator=num, denominator=den, time=0)]
-    with_harmony = harmony and bool(score.get("harmony"))
-    mf = mido.MidiFile(type=1 if with_harmony else 0, ticks_per_beat=tpb, charset="utf-8")
+    mf = mido.MidiFile(type=0, ticks_per_beat=tpb, charset="utf-8")
     mf.tracks.append(_track(score["notes"], bpm, tpb, track_name, meta))
-    if with_harmony:
-        mf.tracks.append(_track(score["harmony"], bpm, tpb, "Bapu harmony", []))
     path.parent.mkdir(parents=True, exist_ok=True)
     mf.save(str(path))
     return path

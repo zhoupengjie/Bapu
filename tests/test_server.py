@@ -14,7 +14,7 @@ from bapu.models.registry import Registry
 from bapu.server import create_app
 from bapu.service import JobService
 from bapu.stages.base import Stage, StageContext, StageResult
-from bapu.workdir import WorkDir
+from bapu.workdir import WorkDir, write_json_atomic
 
 SCORE = {
     "tempo": {"bpm": 120.0, "time_signature": "4/4", "source": "auto"}, "lang": "yue",
@@ -45,7 +45,7 @@ def make_stages(delay: float = 0.0):
 
 
 def fake_finalize(wd: WorkDir) -> None:
-    (wd.root / "score.json").write_text(json.dumps(SCORE, ensure_ascii=False), encoding="utf-8")
+    write_json_atomic(wd.root / "score.json", SCORE)  # like report.finalize: unchanged content is not rewritten
     (wd.root / "review.json").write_text(json.dumps({"summary": {"attention": 2}}), encoding="utf-8")
 
 
@@ -140,7 +140,7 @@ def test_upload_creates_inputs_and_lyrics_are_used(env):
         assert job["has_lyrics"] and job["sources"] == {"source": "a.wav", "lyrics": "l.txt"}
         client.post(f"/api/jobs/{job['id']}/run", json={})
         assert wait_state(client, job["id"])["state"] == "done"
-        out = svc.root / job["id"] / "02_slow" / "y.txt"
+        out = svc.root / job["id"] / ".bapu" / "02_slow" / "y.txt"  # intermediate files live in .bapu/
         assert out.read_text(encoding="utf-8") == "audio-bytes天空"
 
 
@@ -206,6 +206,23 @@ def test_export_and_download(env):
         assert client.post(f"/api/jobs/{job['id']}/export", json={"formats": ["wav"]}).status_code == 400
 
 
+def test_export_state_survives_a_cached_rerun(env):
+    svc, audio = env()
+    with TestClient(create_app(svc)) as client:
+        job = client.post("/api/jobs", data={"audio_path": str(audio)}).json()
+        assert job["exported_at"] is None and job["export_stale"] is False
+        client.post(f"/api/jobs/{job['id']}/run", json={})
+        wait_state(client, job["id"])
+        client.post(f"/api/jobs/{job['id']}/export", json={"formats": ["mid"], "audio": "none"})
+        d = client.get(f"/api/jobs/{job['id']}").json()
+        assert d["exported_at"] and not d["export_stale"]
+        assert [f["name"] for f in d["exports"]] == ["song.mid"]
+        # an all-cached rerun rewrites nothing, so the export stays current
+        client.post(f"/api/jobs/{job['id']}/run", json={})
+        wait_state(client, job["id"])
+        assert client.get(f"/api/jobs/{job['id']}").json()["export_stale"] is False
+
+
 def test_audio_supports_range(env):
     svc, audio = env()
     with TestClient(create_app(svc)) as client:
@@ -232,3 +249,13 @@ def test_models_carry_manual_download_info(env):
         assert net["status"] == "ready" and net["download"]["files"][0]["present"]
         algo = next(m for m in client.get("/api/models").json() if m["id"] == "algo")
         assert algo["download"]["dir"] is None
+
+
+def test_load_reports_cpu_ram_and_gpu_when_there_is_one(env):
+    svc, _ = env()
+    with TestClient(create_app(svc)) as client:
+        d = client.get("/api/system/load").json()
+        assert 0 <= d["cpu"] <= 100 and d["cpu_count"] >= 1
+        assert 0 < d["ram"]["used"] <= d["ram"]["total"]
+        if d["gpu"] is not None:  # NVIDIA driver present
+            assert 0 <= d["gpu"]["util"] <= 100 and d["gpu"]["mem_used"] <= d["gpu"]["mem_total"]

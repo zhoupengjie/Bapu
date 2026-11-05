@@ -18,9 +18,11 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from bapu import compare, jobs, pipeline
+from bapu import compare, jobs, pipeline, project
 from bapu import corrections as corr_mod
+from bapu.server import dialogs
 from bapu.service import JobService, RunRequest, ServiceError
+from bapu.stages.separate import DECODED
 
 AUDIO_STEMS = {
     "vocals": ("separate", "vocals"), "instrumental": ("separate", "instrumental"),
@@ -43,11 +45,19 @@ class CorrectionsBody(BaseModel):
 class ExportBody(BaseModel):
     formats: list[str] = list(jobs.EXPORT_FORMATS)
     audio: str = "accompaniment,lead_dry"
-    harmony: bool = True
 
 
 class PullBody(BaseModel):
     accept_license: bool = False
+
+
+class OpenBody(BaseModel):
+    path: str  # a .bapu file or a project folder
+
+
+class DialogBody(BaseModel):
+    kind: str  # audio | lyrics | project | folder
+    initial: str | None = None
 
 
 def create_app(service: JobService, static_dir: Path | None = None) -> FastAPI:
@@ -71,6 +81,11 @@ def create_app(service: JobService, static_dir: Path | None = None) -> FastAPI:
     @app.get("/api/system")
     def system() -> dict[str, Any]:
         return service.system()
+
+    @app.get("/api/system/load")
+    def load() -> dict[str, Any]:
+        """CPU, RAM, GPU and VRAM right now (for the progress page)."""
+        return service.monitor.sample()
 
     @app.get("/api/stages")
     def stages() -> list[dict[str, Any]]:
@@ -106,17 +121,18 @@ def create_app(service: JobService, static_dir: Path | None = None) -> FastAPI:
         lyrics: UploadFile | None = File(None),
         audio_path: str = Form(""),
         lyrics_path: str = Form(""),
+        folder: str = Form(""),
     ) -> dict[str, Any]:
-        """Either upload the files, or (local use) give their paths."""
+        """A new project in `folder`. The audio is uploaded or (local use) given
+        by path; either way it is copied into the project's inputs/."""
         if audio is None and not audio_path:
             raise ServiceError("需要音频：上传文件或给出 audio_path")
         with tempfile.TemporaryDirectory() as tmp:
             src = Path(audio_path) if audio_path else Path(tmp) / Path(audio.filename or "audio").name
             if audio is not None:
                 src.write_bytes(await audio.read())
-            job_id = service.create(name or src.stem, src, Path(lyrics_path) if lyrics_path else None)
-            if audio is not None:
-                service.save_upload(job_id, "audio", src.name, src.read_bytes())
+            job_id = service.create(name or src.stem, src, Path(lyrics_path) if lyrics_path else None,
+                                    Path(folder) if folder else None)
         if lyrics is not None:
             service.save_upload(job_id, "lyrics", lyrics.filename or "lyrics.txt", await lyrics.read())
         return service.detail(job_id)
@@ -126,9 +142,32 @@ def create_app(service: JobService, static_dir: Path | None = None) -> FastAPI:
         return service.detail(job_id)
 
     @app.post("/api/jobs/{job_id}/lyrics")
-    async def set_lyrics(job_id: str, lyrics: UploadFile = File(...)) -> dict[str, Any]:
-        service.save_upload(job_id, "lyrics", lyrics.filename or "lyrics.txt", await lyrics.read())
+    async def set_lyrics(job_id: str, lyrics: UploadFile | None = File(None), lyrics_path: str = Form("")) -> dict[str, Any]:
+        """Upload the reference lyrics, or (local use) give their path."""
+        if lyrics is not None:
+            service.save_upload(job_id, "lyrics", lyrics.filename or "lyrics.txt", await lyrics.read())
+        elif lyrics_path:
+            service.set_input(job_id, "lyrics", Path(lyrics_path))
+        else:
+            raise ServiceError("需要歌词文件：上传或给出 lyrics_path")
         return service.detail(job_id)
+
+    # -- projects ----------------------------------------------------------------------------
+    @app.post("/api/projects/open")
+    def open_project(body: OpenBody) -> dict[str, Any]:
+        return service.detail(service.open_project(Path(body.path)))
+
+    @app.post("/api/dialog")
+    def dialog(body: DialogBody) -> dict[str, Any]:
+        """Show a system file / folder dialog on this machine; returns the chosen path."""
+        try:
+            path = dialogs.ask(body.kind, body.initial)
+        except dialogs.DialogError as e:
+            raise ServiceError(str(e)) from None
+        out: dict[str, Any] = {"path": path}
+        if path and body.kind == "audio":
+            out["folder"] = str(dialogs.suggest_folder(Path(path)))
+        return out
 
     @app.post("/api/jobs/{job_id}/run", status_code=202)
     def run(job_id: str, body: RunBody) -> dict[str, Any]:
@@ -170,6 +209,10 @@ def create_app(service: JobService, static_dir: Path | None = None) -> FastAPI:
         wd = service.workdir(job_id)
         if stem == "source":
             p = service.sources(wd).get("source")
+            rec = wd.get("separate")
+            decoded = wd.root / rec.dir / DECODED if rec else None
+            if decoded is not None and decoded.exists():  # an MP4 etc.: play its decoded audio
+                p = decoded
         elif stem in AUDIO_STEMS:
             stage, artifact = AUDIO_STEMS[stem]
             rec = wd.get(stage)
@@ -210,16 +253,17 @@ def create_app(service: JobService, static_dir: Path | None = None) -> FastAPI:
     def export(job_id: str, body: ExportBody) -> dict[str, Any]:
         wd = service.workdir(job_id)
         try:
-            written = jobs.export(wd, body.formats, body.audio, body.harmony)
+            written = jobs.export(wd, body.formats, body.audio)
         except jobs.JobError as e:
             raise ServiceError(str(e)) from None
         return {"files": [{"format": f, "name": p.name, "size": p.stat().st_size} for f, p in written]}
 
     @app.get("/api/jobs/{job_id}/export/{name}")
     def download(job_id: str, name: str) -> FileResponse:
-        folder = service.workdir(job_id).root / "export"
-        p = (folder / name).resolve()
-        if p.parent != folder.resolve() or not p.is_file():
+        wd = service.workdir(job_id)
+        files = {f["name"] for f in service.exports(wd)}  # only what Bapu exported
+        p = (project.folder_of(wd.root) / name).resolve()
+        if name not in files or not p.is_file():
             raise HTTPException(404, "没有这个文件")
         return FileResponse(p, filename=p.name)
 

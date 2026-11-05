@@ -12,7 +12,7 @@ import re
 from pathlib import Path
 from typing import Any, Sequence
 
-from bapu import pipeline
+from bapu import pipeline, project
 from bapu.models.registry import ModelSpec, Registry
 from bapu.stages import STAGES
 from bapu.stages.base import Stage
@@ -79,10 +79,11 @@ def audio_tracks(wd: WorkDir, spec: str) -> list[tuple[str, Path]]:
     return out
 
 
-def export(wd: WorkDir, formats: Sequence[str] = EXPORT_FORMATS, audio: str = "accompaniment,lead_dry",
-           harmony: bool = True) -> list[tuple[str, Path]]:
-    """Write the requested formats to `<work dir>/export/`; `harmony` adds the
-    harmony line as a second vocal track (.svp) / MIDI track."""
+def export(wd: WorkDir, formats: Sequence[str] = EXPORT_FORMATS, audio: str = "accompaniment,lead_dry"
+           ) -> list[tuple[str, Path]]:
+    """Write the requested formats. In a project they go next to the .bapu
+    file, named after the project, without overwriting a file Bapu did not
+    write; in a bare work dir (tests, old CLI runs) into `<work dir>/export/`."""
     from bapu.export import midi, paste
     from bapu.export import svp as svp_export
 
@@ -93,15 +94,27 @@ def export(wd: WorkDir, formats: Sequence[str] = EXPORT_FORMATS, audio: str = "a
     if unknown:
         raise JobError(f"不认识的格式：{', '.join(unknown)}")
     score = json.loads(score_p.read_text(encoding="utf-8"))
-    name = slug(Path(wd.sources().get("source", ("song",))[0]).stem)
-    dest = wd.root / "export"
+    in_project = wd.root.name == project.DATA
+    if in_project:
+        folder = project.folder_of(wd.root)
+        name = project.safe_name(project.read(folder)["name"])
+
+        def target(fn: str) -> Path:
+            return project.export_target(folder, wd.root, fn)
+    else:
+        name = slug(Path(wd.sources().get("source", ("song",))[0]).stem)
+
+        def target(fn: str) -> Path:
+            return wd.root / "export" / fn
     written = []
     for f in formats:
         if f == "mid":
-            written.append((f, midi.write(score, dest / f"{name}.mid", harmony=harmony)))
+            out = midi.write(score, target(f"{name}.mid"))
         elif f == "paste":
-            written.append((f, paste.write(score, dest / f"{name}.paste.txt")))
-        elif f == "svp":
-            written.append((f, svp_export.write(score, dest / f"{name}.svp", audio_tracks=audio_tracks(wd, audio),
-                                               name=name, harmony=harmony)))
+            out = paste.write(score, target(f"{name}.paste.txt"))
+        else:
+            out = svp_export.write(score, target(f"{name}.svp"), audio_tracks=audio_tracks(wd, audio), name=name)
+        if in_project:
+            project.record_export(wd.root, out)
+        written.append((f, out))
     return written

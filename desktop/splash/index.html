@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Bapu 扒谱</title>
+<style>
+  :root { --bg: #f3f5f8; --ink: #18202b; --muted: #5b6675; --accent: #2457d6; --bad: #9b1c1c; color-scheme: light dark; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #11151b; --ink: #e6eaf0; --muted: #9aa5b4; --accent: #6f9bff; --bad: #f3a0a0; } }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--ink); font-family: "Noto Sans SC", system-ui, "Segoe UI", sans-serif;
+    display: flex; align-items: center; justify-content: center; }
+  .box { display: flex; flex-direction: column; align-items: center; gap: 16px; max-width: 560px; padding: 24px; text-align: center; }
+  b { font-size: 28px; }
+  .spin { width: 28px; height: 28px; border-radius: 50%; border: 3px solid var(--accent); border-right-color: transparent; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #msg { color: var(--muted); font-size: 14px; line-height: 1.6; white-space: pre-wrap; }
+  .error #msg { color: var(--bad); }
+  .error .spin { display: none; }
+</style>
+</head>
+<body>
+  <div class="box" id="box">
+    <b>Bapu 扒谱</b>
+    <div class="spin" aria-hidden="true"></div>
+    <div id="msg">正在启动本机服务…</div>
+  </div>
+  <script>
+    // called by the desktop shell when the service cannot start
+    window.showError = (text) => {
+      document.getElementById("box").classList.add("error");
+      document.getElementById("msg").textContent = text;
+    };
+  </script>
+</body>
+</html>

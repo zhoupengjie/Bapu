@@ -33,6 +33,9 @@ dependencies = [
     "uvicorn>=0.54",
     "python-multipart>=0.0.33",
     "pypinyin>=0.55",
+    "av>=19",
+    "nvidia-ml-py>=12",
+    "psutil>=6",
 ]
 
 [build-system]

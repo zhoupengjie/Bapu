@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import WaveSurfer from "wavesurfer.js";
-import { FLAG_LABEL, KIND_LABEL, api, audioUrl, mmss, type JobDetail, type Kind, type Review, type Score } from "../api";
-import { JobHeader, go } from "../App";
+import { FLAG_LABEL, KIND_LABEL, api, audioUrl, mmss, type Kind, type Review, type Score } from "../api";
+import { go, useJob } from "../App";
 import PianoRoll, { pitchName } from "../components/PianoRoll";
 
 type Item = { id: string; cat: string; time: number; line: number | null; note?: number | null; text: string; attention: boolean };
 type Pending = { key: string; entry: Record<string, unknown>; label: string };
 
 const CATS: Record<string, string> = {
-  dictation: "听写", merge: "合并", line: "句子", sustain: "- 位置", harmony: "和声", correction: "修正",
+  dictation: "听写", merge: "合并", line: "句子", sustain: "- 位置", correction: "修正",
 };
 
 function buildItems(r: Review): Item[] {
@@ -20,15 +20,14 @@ function buildItems(r: Review): Item[] {
     items.push({ id: `l${l.line}`, cat: "line", time: l.t0 ?? l.start ?? 0, line: l.line, note: l.first_note, text: `${why} · 置信度 ${l.conf?.toFixed(2) ?? "—"}`, attention: true });
   });
   r.sustains.filter((s) => s.attention).forEach((s, k) => items.push({ id: `s${k}`, cat: "sustain", time: s.time, line: s.line, note: s.note, text: `${s.after_rest ? "休止后" : "起音明显"} · 起音 ${s.onset?.toFixed(2) ?? "—"}`, attention: true }));
-  (r.harmony ?? []).forEach((h, k) => items.push({ id: `h${k}`, cat: "harmony", time: h.time, line: h.line, text: `和声 #${h.note} · ${h.status}`, attention: h.attention }));
   r.stale_corrections.forEach((c) => items.push({ id: `c${c.id}`, cat: "correction", time: c.at ?? 0, line: c.line, text: `第 ${c.id} 条修正失效（${c.type}）`, attention: true }));
   r.conflicting_corrections.forEach((c) => items.push({ id: `x${c.id}`, cat: "correction", time: 0, line: c.line, text: `第 ${c.id} 条修正冲突：${c.reason}`, attention: true }));
   return items.sort((a, b) => a.time - b.time);
 }
 
 export default function ReviewPage({ id }: { id: string }) {
+  const { refresh } = useJob();
   const enc = encodeURIComponent(id);
-  const [job, setJob] = useState<JobDetail | null>(null);
   const [score, setScore] = useState<Score | null>(null);
   const [review, setReview] = useState<Review | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -37,18 +36,21 @@ export default function ReviewPage({ id }: { id: string }) {
   const [playing, setPlaying] = useState(false);
   const [span, setSpan] = useState(12);
   const [t0, setT0] = useState(0);
-  const [selected, setSelected] = useState<number | null>(null);
+  const [selection, setSelection] = useState<ReadonlySet<number>>(new Set());
+  const [selected, setSelected] = useState<number | null>(null); // the note in the inspector
+  const [duration, setDuration] = useState(0);
+  const select = useCallback((indices: number[], primary: number | null) => {
+    setSelection(new Set(indices));
+    setSelected(primary);
+  }, []);
   const [filter, setFilter] = useState<string>("attention");
   const [itemId, setItemId] = useState<string | null>(null);
   const [pending, setPending] = useState<Pending[]>([]);
-  const [showHarmony, setShowHarmony] = useState(true);
-  const [harmonySel, setHarmonySel] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   const waveEl = useRef<HTMLDivElement>(null);
   const ws = useRef<WaveSurfer | null>(null);
 
   const load = useCallback(() => {
-    api.get<JobDetail>(`/jobs/${enc}`).then(setJob).catch(() => {});
     api.get<Score>(`/jobs/${enc}/score`).then(setScore).catch((e) => setError(e.message));
     api.get<Review>(`/jobs/${enc}/review`).then(setReview).catch(() => {});
   }, [enc]);
@@ -65,6 +67,7 @@ export default function ReviewPage({ id }: { id: string }) {
       cursorColor: "#c2410c", barWidth: 2, barGap: 1,
     });
     w.on("timeupdate", (t) => setTime(t));
+    w.on("ready", (d) => setDuration(d));
     w.on("play", () => setPlaying(true));
     w.on("pause", () => setPlaying(false));
     w.on("error", () => setError("这条音轨还没有生成"));
@@ -74,6 +77,17 @@ export default function ReviewPage({ id }: { id: string }) {
       ws.current = null;
     };
   }, [id, stem]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement;
+      if (e.code !== "Space" || /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(el.tagName)) return;
+      e.preventDefault();
+      ws.current?.playPause();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // keep the piano roll on the playhead while playing
   useEffect(() => {
@@ -90,6 +104,13 @@ export default function ReviewPage({ id }: { id: string }) {
     seek(t);
   };
 
+  const songLength = useMemo(() => duration || Math.max(0, ...(score?.notes.map((n) => n.start + n.dur) ?? [0])) + 2, [duration, score]);
+  const zoom = (factor: number) => {
+    const mid = t0 + span / 2;
+    const ns = Math.min(Math.max(songLength, 10), Math.max(1.5, span * factor));
+    setSpan(ns);
+    setT0(Math.max(0, mid - ns / 2));
+  };
   const items = useMemo(() => (review ? buildItems(review) : []), [review]);
   const shown = items.filter((i) => (filter === "attention" ? i.attention : filter === "all" ? true : i.cat === filter));
   const notesByIndex = useMemo(() => new Map(score?.notes.map((n) => [n.index, n]) ?? []), [score]);
@@ -107,9 +128,8 @@ export default function ReviewPage({ id }: { id: string }) {
 
   function pickItem(it: Item) {
     setItemId(it.id);
-    setHarmonySel(it.cat === "harmony" ? Number(it.text.match(/#(\d+)/)?.[1]) : null);
     const n = it.note != null ? notesByIndex.get(it.note) : score?.notes.find((x) => x.start >= it.time - 0.05);
-    if (n) setSelected(n.index);
+    if (n) select([n.index], n.index);
     focus(it.time);
   }
 
@@ -132,7 +152,8 @@ export default function ReviewPage({ id }: { id: string }) {
       await api.put(`/jobs/${enc}/corrections`, { text, version: cur.version });
       await api.post(`/jobs/${enc}/run`, {});
       setPending([]);
-      go(`/job/${enc}/run`);
+      await refresh();
+      go("run");
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -144,10 +165,20 @@ export default function ReviewPage({ id }: { id: string }) {
   const lineLang = (line: number) => score?.notes.find((n) => n.line === line && n.lang !== "en")?.lang ?? "en";
   const noteMerges = sel ? review?.merges.filter((m) => m.note === sel.index) ?? [] : [];
   const lineNotes = sel ? score?.notes.filter((n) => n.line === sel.line) ?? [] : [];
+  const selNotes = score?.notes.filter((n) => selection.has(n.index)) ?? [];
+  function setKind(targets: typeof selNotes, k: Kind) {
+    setPending((list) => {
+      let out = list;
+      for (const n of targets) {
+        out = out.filter((p) => p.key !== `kind${n.index}`);
+        if (k !== n.kind) out = [...out, { key: `kind${n.index}`, entry: { type: "kind", at: +n.start.toFixed(3), kind: k, note: n.index }, label: `#${n.index} 改成${KIND_LABEL[k]}` }];
+      }
+      return out;
+    });
+  }
 
   return (
-    <main className="page">
-      <JobHeader job={job} tab="review" />
+    <div className="pagebody">
       {error && <div className="notice bad">{error}</div>}
       {review && (
         <div className="notice">
@@ -170,11 +201,7 @@ export default function ReviewPage({ id }: { id: string }) {
                   <option value="lead">主唱（带混响）</option>
                 </select>
               </label>
-              <label className="small muted" style={{ display: "flex", gap: 6, alignItems: "center", marginLeft: "auto" }}>窗口
-                <select value={span} onChange={(e) => setSpan(Number(e.target.value))}>
-                  {[6, 12, 24, 48].map((s) => <option key={s} value={s}>{s} 秒</option>)}
-                </select>
-              </label>
+              <span className="small muted" style={{ marginLeft: "auto" }}>空格 播放 / 暂停</span>
             </div>
             <div ref={waveEl} />
           </section>
@@ -186,22 +213,26 @@ export default function ReviewPage({ id }: { id: string }) {
                 <span><i style={{ background: "var(--word)" }} />普通字</span>
                 <span><i style={{ background: "var(--sustain)" }} />- 延音</span>
                 <span><i style={{ background: "var(--cont)" }} />+ 连音</span>
-                <span>虚线 = 合并前的切口</span>
+                <span><i style={{ border: "2px dashed #e0913c", background: "transparent" }} />⚠ 待确认</span>
+                <span><i style={{ background: "#e0913c", height: 3 }} />要试听的句子</span>
+                <span><i style={{ background: "#c2410c", width: 2 }} />播放位置</span>
+                <span>灰色虚线 = 合并前的切口</span>
               </span>
-              {!!score?.harmony?.length && (
-                <label className="small" style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                  <input type="checkbox" checked={showHarmony} onChange={() => setShowHarmony(!showHarmony)} />
-                  显示和声（粉色框，{score.harmony.length} 个）
-                </label>
-              )}
               <span className="seg">
-                <button type="button" onClick={() => setT0(Math.max(0, t0 - span * 0.8))}>◀</button>
-                <button type="button" onClick={() => setT0(t0 + span * 0.8)}>▶</button>
+                <button type="button" onClick={() => setT0(Math.max(0, t0 - span * 0.8))} aria-label="往前">◀</button>
+                <button type="button" onClick={() => setT0(t0 + span * 0.8)} aria-label="往后">▶</button>
+                <button type="button" onClick={() => zoom(1.5)} aria-label="缩小">－</button>
+                <button type="button" onClick={() => zoom(1 / 1.5)} aria-label="放大">＋</button>
               </span>
             </div>
+            <div className="roll-hint small muted">
+              左键拖动框选（Ctrl / Shift 加选）· 中键拖动平移 · 滚轮上下 · Shift+滚轮左右 · Ctrl+滚轮缩放 · 点上方标尺定位播放 · Esc 取消选择
+            </div>
             {score && (
-              <PianoRoll notes={score.notes} lines={reviewLines} t0={t0} span={span} playhead={time} selected={selected}
-                kindOverride={kindOverride} cuts={cuts} harmony={showHarmony ? score.harmony ?? [] : []} selectedHarmony={harmonySel} onSelect={(i) => { setSelected(i); seek(notesByIndex.get(i)!.start); }} onSeek={seek} />
+              <PianoRoll label="主唱" notes={score.notes} lines={reviewLines} t0={t0} span={span} playhead={time}
+                duration={songLength} selected={selection} primary={selected} kindOverride={kindOverride} cuts={cuts}
+                bpm={score.tempo.bpm} beatsPerBar={parseInt(score.tempo.time_signature) || 4} height={380}
+                onSelect={select} onSeek={seek} onView={(a, b) => { setT0(a); setSpan(b); }} />
             )}
           </section>
 
@@ -209,6 +240,7 @@ export default function ReviewPage({ id }: { id: string }) {
             <section className="card" aria-labelledby="insp">
               <div className="row" style={{ gap: 10, alignItems: "center" }}>
                 <h2 id="insp">音符 #{sel.index}</h2>
+                {selNotes.length > 1 && <span className="badge info">已选 {selNotes.length} 个音符</span>}
                 <span className="badge">L{String(sel.line).padStart(2, "0")}</span>
                 {[...new Set(sel.flags)].map((f) => <span key={f} className="badge warn">{FLAG_LABEL[f] ?? f}</span>)}
               </div>
@@ -218,16 +250,17 @@ export default function ReviewPage({ id }: { id: string }) {
                 <div><div className="muted small">歌词</div><div>{sel.lyric}{sel.auto_lyric !== sel.lyric && <span className="muted small">（自动：{sel.auto_lyric}）</span>}</div></div>
                 <div><div className="muted small">对齐 / 起音</div><div className="mono">{sel.conf.align?.toFixed(2) ?? "—"} / {sel.conf.onset?.toFixed(2) ?? "—"}</div></div>
               </div>
-              <div className="field">类型
+              <div className="field">{selNotes.length > 1 ? `类型（改选中的 ${selNotes.length} 个）` : "类型"}
                 <div className="seg">
-                  {(["word", "sustain", "cont"] as Kind[]).map((k) => (
-                    <button key={k} type="button" className={(kindOverride[sel.index] ?? sel.kind) === k ? "on" : ""}
-                      onClick={() => k === sel.kind
-                        ? setPending((l) => l.filter((p) => p.key !== `kind${sel.index}`))
-                        : addPending({ key: `kind${sel.index}`, entry: { type: "kind", at: +sel.start.toFixed(3), kind: k, note: sel.index }, label: `#${sel.index} 改成${KIND_LABEL[k]}` })}>
-                      {KIND_LABEL[k]}
-                    </button>
-                  ))}
+                  {(["word", "sustain", "cont"] as Kind[]).map((k) => {
+                    const targets = selNotes.length > 1 ? selNotes : [sel];
+                    const on = targets.every((n) => (kindOverride[n.index] ?? n.kind) === k);
+                    return (
+                      <button key={k} type="button" className={on ? "on" : ""} onClick={() => setKind(targets, k)}>
+                        {KIND_LABEL[k]}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
               <div className="field">这一句（L{String(sel.line).padStart(2, "0")}）的语言
@@ -263,6 +296,14 @@ export default function ReviewPage({ id }: { id: string }) {
                   focus(st);
                   ws.current?.play(st, end ? end.start + end.dur : undefined);
                 }}>试听这一句</button>
+                {selNotes.length > 1 && (
+                  <button type="button" className="btn small" onClick={() => {
+                    const a = Math.min(...selNotes.map((n) => n.start));
+                    const b = Math.max(...selNotes.map((n) => n.start + n.dur));
+                    seek(a);
+                    ws.current?.play(a, b);
+                  }}>试听选中的音符</button>
+                )}
               </div>
             </section>
           )}
@@ -308,6 +349,6 @@ export default function ReviewPage({ id }: { id: string }) {
           </section>
         </aside>
       </div>
-    </main>
+    </div>
   );
 }

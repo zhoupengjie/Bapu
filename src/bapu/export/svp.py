@@ -104,17 +104,12 @@ def _sv_notes(notes: list[dict[str, Any]], bpm: float, song_lang: str) -> list[d
     return out
 
 
-def build(score: dict[str, Any], *, audio_tracks: Sequence[tuple[str, Path]] = (), name: str = "Bapu",
-          harmony: bool = True) -> dict[str, Any]:
-    """`harmony`: add the harmony notes (score["harmony"]) as a second vocal track."""
+def build(score: dict[str, Any], *, audio_tracks: Sequence[tuple[str, Path]] = (), name: str = "Bapu") -> dict[str, Any]:
     bpm = float(score["tempo"]["bpm"])
     num, den = (int(x) for x in str(score["tempo"].get("time_signature", "4/4")).split("/"))
     song_lang = LANG.get(score.get("lang", ""), "")
     vocal = _group("main", _sv_notes(score["notes"], bpm, song_lang))
     tracks = [_track(f"{name} vocal", 0, "ff7db235", vocal, _ref(vocal["uuid"], language=song_lang))]
-    if harmony and score.get("harmony"):
-        group = _group("main", _sv_notes(score["harmony"], bpm, song_lang))
-        tracks.append(_track(f"{name} 和声", 1, "ffd16ba5", group, _ref(group["uuid"], language=song_lang)))
     colors = ("ff15a5c6", "ffe0913c", "ff9b7bd8")
     for i, (label, path) in enumerate(audio_tracks):
         empty = _group("main", [])
@@ -136,9 +131,9 @@ def build(score: dict[str, Any], *, audio_tracks: Sequence[tuple[str, Path]] = (
 
 
 def write(score: dict[str, Any], path: Path, *, audio_tracks: Sequence[tuple[str, Path]] = (),
-          name: str = "Bapu", harmony: bool = True) -> Path:
+          name: str = "Bapu") -> Path:
     """`audio_tracks`: (label, file) pairs, each referenced by absolute path."""
-    project = build(score, audio_tracks=audio_tracks, name=name, harmony=harmony)
+    project = build(score, audio_tracks=audio_tracks, name=name)
     path.parent.mkdir(parents=True, exist_ok=True)
     # SV writes UTF-8 JSON followed by a NUL byte.
     path.write_bytes(json.dumps(project, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\x00")

@@ -19,6 +19,7 @@ import pytest
 
 from bapu import pipeline, report
 from bapu.models.registry import Registry
+from bapu import project
 from bapu.workdir import WorkDir
 
 AUDIO = os.environ.get("BAPU_REGRESSION_AUDIO")
@@ -48,9 +49,9 @@ MERGES = """\
 @pytest.fixture(scope="module")
 def wd(tmp_path_factory):
     out = Path(os.environ.get("BAPU_REGRESSION_WORK") or tmp_path_factory.mktemp("song"))
-    w = WorkDir(out)
+    w = WorkDir(project.data_dir(out))  # a project folder keeps its data in .bapu/
     if not w.corrections_path.exists():
-        out.mkdir(parents=True, exist_ok=True)
+        w.root.mkdir(parents=True, exist_ok=True)
         w.corrections_path.write_text(MERGES, encoding="utf-8")
     sources = {"source": Path(AUDIO)}
     if LYRICS and Path(LYRICS).exists():

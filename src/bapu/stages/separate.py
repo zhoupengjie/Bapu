@@ -2,16 +2,24 @@
 
 from __future__ import annotations
 
+from bapu.audio import decode_to_wav, readable
 from bapu.backends import separator
 from bapu.stages.base import Stage, StageContext, StageResult
+
+
+DECODED = "source.wav"  # the decoded audio of a source soundfile cannot read
 
 
 def _run(ctx: StageContext) -> StageResult:
     spec = ctx.models["model"]
     assert spec is not None
+    source = ctx.inputs["source"]
+    if not readable(source):  # MP4 / M4A / video: take the audio track out first
+        ctx.progress("从文件里取出音轨")
+        source = decode_to_wav(source, ctx.out_dir / DECODED)
     ctx.progress(f"载入 {spec.name}")
     out = separator.run_model(
-        ctx.registry, spec, ctx.inputs["source"], ctx.out_dir,
+        ctx.registry, spec, source, ctx.out_dir,
         {"vocals": "vocals", "instrumental": "instrumental"},
         normalization_threshold=float(ctx.params["normalization_threshold"]),
     )

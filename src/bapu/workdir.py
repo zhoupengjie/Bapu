@@ -32,9 +32,13 @@ def cache_key(payload: dict[str, Any]) -> str:
 
 
 def write_json_atomic(path: Path, data: Any) -> None:
+    """Write via a temp file; leave the file (and its mtime) alone when the content is unchanged."""
+    text = json.dumps(data, ensure_ascii=False, indent=2)
+    if path.exists() and path.read_text(encoding="utf-8") == text:
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, path)
 
 

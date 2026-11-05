@@ -1,150 +1,203 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { ApiError, api, follow, type JobDetail, type StageInfo } from "../api";
-import { JobHeader } from "../App";
+import { useCallback, useEffect, useState } from "react";
+import { ApiError, api, follow, fmtSize, type Model, type StageInfo } from "../api";
+import { go, started, useJob } from "../App";
+import { STEPS } from "../flow";
+import DownloadInfo from "../components/DownloadInfo";
+import LoadPanel from "../components/LoadPanel";
 
-const STATE: Record<string, [string, string]> = { fresh: ["最新", "ok"], stale: ["需重跑", "warn"], missing: ["未运行", ""] };
+type Live = { stage: string; fraction: number | null; message: string };
 
-function metricsLine(m: Record<string, unknown>): string {
-  return Object.entries(m)
-    .filter(([, v]) => typeof v !== "object" || v === null)
-    .slice(0, 6)
-    .map(([k, v]) => `${k}=${v}`)
-    .join(" · ");
+/** Models this job will use that are not on disk yet. */
+function missingModels(stages: StageInfo[], models: Model[], params: Record<string, Record<string, unknown>>): Model[] {
+  const ids = stages.flatMap((s) => Object.keys(s.model_params).map((p) => params[s.name]?.[p] ?? s.defaults[p]));
+  return models.filter((m) => ids.includes(m.id) && (m.status === "missing" || m.status === "corrupt"));
 }
 
-export default function RunPage({ id }: { id: string }) {
-  const [job, setJob] = useState<JobDetail | null>(null);
-  const [stages, setStages] = useState<StageInfo[]>([]);
-  const [live, setLive] = useState<{ stage: string; fraction: number | null; message: string } | null>(null);
-  const [log, setLog] = useState<string[]>([]);
-  const [from, setFrom] = useState<string>("");
-  const [edits, setEdits] = useState<Record<string, string>>({});
+/** First use: accept the licenses once, download, then start. */
+function ModelDownload({ missing, onReady }: { missing: Model[]; onReady: () => void }) {
+  const [agree, setAgree] = useState(false);
+  const [progress, setProgress] = useState<Record<string, number | null>>({});
   const [error, setError] = useState<string | null>(null);
-  const logRef = useRef<HTMLPreElement>(null);
+  const [manual, setManual] = useState<string | null>(null);
+  const busy = Object.keys(progress).length > 0 || missing.some((m) => m.downloading);
+  const total = missing.reduce((n, m) => n + (m.size ?? 0), 0);
 
-  const load = useCallback(() => api.get<JobDetail>(`/jobs/${encodeURIComponent(id)}`).then(setJob).catch((e) => setError(e.message)), [id]);
-
-  useEffect(() => {
-    load();
-    api.get<StageInfo[]>("/stages").then(setStages).catch(() => {});
-    const stop = follow(`/jobs/${encodeURIComponent(id)}/events`, (ev) => {
-      const time = new Date((ev.at as number) * 1000).toLocaleTimeString();
-      if (ev.type === "progress") {
-        setLive({ stage: ev.stage as string, fraction: (ev.fraction as number) ?? null, message: (ev.message as string) ?? "" });
-        if (ev.kind !== "update" || (ev.message as string)?.startsWith("载入"))
-          setLog((l) => [...l.slice(-300), `${time} ${ev.stage} ${ev.kind}${ev.message ? " " + ev.message : ""}`]);
-        if (ev.kind === "done" || ev.kind === "skip") load();
-      } else if (ev.type === "state") {
-        setLog((l) => [...l.slice(-300), `${time} —— ${ev.state}${ev.error ? "：" + ev.error : ""}`]);
-        if (ev.state !== "running") setLive(null);
-        load();
-      }
-    });
-    return stop;
-  }, [id, load]);
-
-  useEffect(() => {
-    logRef.current?.scrollTo(0, logRef.current.scrollHeight);
-  }, [log]);
-
-  const running = job?.state === "running" || job?.state === "queued";
-  const fromStage = stages.find((s) => s.name === from);
-  const current = (job?.params?.[from] ?? {}) as Record<string, unknown>;
-
-  async function run() {
+  async function pullAll() {
     setError(null);
-    const set: Record<string, Record<string, unknown>> = {};
-    for (const [k, raw] of Object.entries(edits)) {
-      const n = Number(raw);
-      (set[from] ??= {})[k] = raw.trim() === "" ? null : Number.isFinite(n) && /^-?[\d.]+$/.test(raw.trim()) ? n : raw;
-    }
-    try {
-      await api.post(`/jobs/${encodeURIComponent(id)}/run`, { from: from || undefined, set });
-      setEdits({});
-      load();
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 409 && Array.isArray(e.detail)) setError(`缺少模型：${(e.detail as string[]).join("、")}，先到模型页下载。`);
-      else setError((e as Error).message);
+    for (const m of missing) {
+      try {
+        await api.post(`/models/${encodeURIComponent(m.id)}/pull`, { accept_license: true });
+      } catch (e) {
+        setError(`${m.name}：${(e as Error).message}`);
+        continue;
+      }
+      setProgress((p) => ({ ...p, [m.id]: 0 }));
+      const stop = follow(`/models/${encodeURIComponent(m.id)}/events`, (ev) => {
+        if (ev.type === "progress") setProgress((p) => ({ ...p, [m.id]: ev.total ? (ev.done as number) / (ev.total as number) : null }));
+        if (ev.type === "state" && ev.state !== "downloading") {
+          stop();
+          if (ev.state === "failed") setError(`${m.name} 下载失败：${ev.error}`);
+          setProgress((p) => { const n = { ...p }; delete n[m.id]; return n; });
+          onReady();
+        }
+      });
     }
   }
 
   return (
-    <main className="page">
-      <JobHeader job={job} tab="run" />
+    <section className="card stepcard" aria-labelledby="h-dl">
+      <h1 id="h-dl">第一次使用，要先下载模型</h1>
+      <p className="lead">共 {missing.length} 个，约 {fmtSize(total)}。只下载一次，之后都在本机运行。</p>
+      <ul className="dl-list">
+        {missing.map((m) => {
+          const p = progress[m.id];
+          return (
+            <li key={m.id}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                <span><b style={{ fontWeight: 500 }}>{m.name}</b> <span className="muted small">{fmtSize(m.size)}</span></span>
+                <span className="small" style={{ color: m.license.commercial === "yes" ? "var(--muted)" : "var(--warn)" }}>
+                  许可证：{m.license.url ? <a href={m.license.url} target="_blank" rel="noreferrer">{m.license.name}</a> : m.license.name}
+                  {m.license.commercial === "no" && "（不可商用）"}
+                </span>
+              </div>
+              {m.id in progress && <span className="bar"><i style={{ width: `${(p ?? 0.03) * 100}%` }} /></span>}
+              <button type="button" className="link" style={{ alignSelf: "flex-start", padding: 0 }} onClick={() => setManual(manual === m.id ? null : m.id)}>
+                {manual === m.id ? "▾" : "▸"} 自己下载（地址、目录和文件名）
+              </button>
+              {manual === m.id && <DownloadInfo model={m} onRecheck={onReady} />}
+            </li>
+          );
+        })}
+      </ul>
+      <label style={{ display: "flex", gap: 10, alignItems: "center" }}>
+        <input type="checkbox" checked={agree} onChange={() => setAgree(!agree)} /> 我已阅读并接受上面这些许可证
+      </label>
       {error && <div className="notice bad">{error}</div>}
-      {job && !job.has_lyrics && <div className="notice warn">没有参考歌词：歌词全部来自听写，审查时每句都要确认。可以在下面补传。</div>}
-      <div className="row">
-        <section className="card flush grow" aria-labelledby="steps">
-          <div className="head">
-            <h2 id="steps" style={{ margin: 0, fontSize: 17 }}>步骤</h2>
-            {live && <span className="small mono">{live.stage} · {live.fraction != null ? `${Math.round(live.fraction * 100)}%` : ""} {live.message}</span>}
-          </div>
-          <div className="scroll-x">
-            <table className="grid">
-              <thead><tr><th>#</th><th>步骤</th><th>状态</th><th>耗时</th><th>结果</th><th /></tr></thead>
-              <tbody>
-                {job?.stages.map((s) => {
-                  const isLive = live?.stage === s.stage && running;
-                  const [label, cls] = isLive ? ["运行中", "info"] : STATE[s.state];
-                  return (
-                    <tr key={s.stage} className={from === s.stage ? "sel" : ""}>
-                      <td className="mono muted">{String(s.index).padStart(2, "0")}</td>
-                      <td>{s.title}<div className="muted small mono">{s.stage}</div></td>
-                      <td>
-                        <span className={`badge ${cls}`}>{label}</span>
-                        {isLive && live?.fraction != null && <div className="bar" style={{ marginTop: 6, width: 90 }}><i style={{ width: `${live.fraction * 100}%` }} /></div>}
-                      </td>
-                      <td className="mono small">{s.seconds != null ? `${s.seconds.toFixed(1)} s` : "—"}</td>
-                      <td className="small muted" style={{ maxWidth: 420 }}>{metricsLine(s.metrics)}</td>
-                      <td><button type="button" className="link" disabled={running} onClick={() => { setFrom(s.stage); setEdits({}); }}>从这一步重跑</button></td>
-                    </tr>
-                  );
-                })}
-                {job && job.stages.length === 0 && <tr><td colSpan={6} className="muted">还没有运行过。</td></tr>}
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        <aside className="side" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-          <section className="card" aria-labelledby="rerun">
-            <h2 id="rerun">{from ? `从「${fromStage?.title ?? from}」重跑` : "运行"}</h2>
-            <p className="muted small" style={{ margin: 0 }}>
-              {from ? "这一步和后面的步骤会重新计算，前面的用缓存。" : "没变的步骤直接用缓存。"}
-            </p>
-            {fromStage && Object.entries(fromStage.defaults).filter(([k]) => !(k in fromStage.model_params)).map(([k, v]) => (
-              <label key={k} className="field"><span className="mono">{k}</span>
-                <input type="text" className="mono" placeholder={String(current[k] ?? v)} value={edits[k] ?? ""}
-                  onChange={(e) => setEdits({ ...edits, [k]: e.target.value })} />
-              </label>
-            ))}
-            <div className="row" style={{ gap: 10 }}>
-              <button type="button" className="btn primary" disabled={running} onClick={run}>{from ? "从这一步重跑" : "开始 / 继续"}</button>
-              {from && <button type="button" className="btn" onClick={() => setFrom("")}>取消选择</button>}
-              {running && <button type="button" className="btn danger" onClick={() => api.post(`/jobs/${encodeURIComponent(id)}/cancel`).then(load)}>取消任务</button>}
-            </div>
-          </section>
-
-          {job && !job.has_lyrics && (
-            <section className="card">
-              <h2>补传参考歌词</h2>
-              <input type="file" accept=".ass,.ssa,.lrc,.txt" onChange={async (e) => {
-                const f = e.target.files?.[0];
-                if (!f) return;
-                const form = new FormData();
-                form.set("lyrics", f);
-                await api.form(`/jobs/${encodeURIComponent(id)}/lyrics`, form).then(load).catch((er) => setError(er.message));
-              }} />
-            </section>
-          )}
-
-          <section className="card">
-            <div style={{ display: "flex", justifyContent: "space-between" }}><h2>日志</h2><span className="muted small">不含歌词</span></div>
-            <pre className="log mono" ref={logRef}>{log.length ? log.join("\n") : "等待事件…"}</pre>
-            {job?.has_score && <a href={`#/job/${encodeURIComponent(id)}/review`}>去审查 →</a>}
-          </section>
-        </aside>
+      <div className="nav-row">
+        <button type="button" className="btn" onClick={() => go("lang")}>← 上一步</button>
+        <button type="button" className="btn primary" disabled={!agree || busy} onClick={pullAll}>
+          {busy ? "下载中…" : "下载并开始处理 →"}
+        </button>
       </div>
-    </main>
+    </section>
+  );
+}
+
+export default function RunPage() {
+  const { job, refresh } = useJob();
+  const [stages, setStages] = useState<StageInfo[]>([]);
+  const [models, setModels] = useState<Model[] | null>(null);
+  const [live, setLive] = useState<Live | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const id = job?.id ?? "";
+  const enc = encodeURIComponent(id);
+
+  const loadModels = useCallback(() => api.get<Model[]>("/models").then(setModels).catch(() => setModels([])), []);
+  useEffect(() => {
+    api.get<StageInfo[]>("/stages").then(setStages).catch(() => {});
+    loadModels();
+  }, [loadModels]);
+
+  useEffect(() => {
+    if (!id) return;
+    return follow(`/jobs/${enc}/events`, (ev) => {
+      if (ev.type === "progress") {
+        setLive({ stage: ev.stage as string, fraction: (ev.fraction as number) ?? null, message: (ev.message as string) ?? "" });
+        if (ev.kind === "done" || ev.kind === "skip") refresh();
+      } else if (ev.type === "state") {
+        if (ev.state !== "running") setLive(null);
+        refresh();
+      }
+    });
+  }, [id, enc, refresh]);
+
+  const start = useCallback(async () => {
+    setError(null);
+    try {
+      await api.post(`/jobs/${enc}/run`, {});
+      await refresh();
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409 && Array.isArray(e.detail)) loadModels();
+      else setError((e as Error).message);
+    }
+  }, [enc, refresh, loadModels]);
+
+  if (!job) return null;
+  if (models === null) return <section className="card stepcard"><span className="muted"><span className="spin" style={{ display: "inline-block", verticalAlign: -2, marginRight: 8 }} />正在读取…</span></section>;
+  const running = job.state === "running" || job.state === "queued";
+  const missing = missingModels(stages, models, job.params);
+
+  // once the last model is on disk, start without another click
+  const onModelReady = async () => {
+    const list = await api.get<Model[]>("/models");
+    setModels(list);
+    if (!running && missingModels(stages, list, job.params).length === 0) start();
+  };
+  if (missing.length && !running) return <ModelDownload missing={missing} onReady={onModelReady} />;
+
+  // before the first run the job has no stage rows yet: list the steps from the pipeline
+  const rows = stages.map((info) => job.stages.find((r) => r.stage === info.name)
+    ?? { stage: info.name, title: info.title, index: info.index, state: "missing" as const, metrics: {} });
+  const total = stages.length || job.stages.length || 9;
+  const fresh = job.stages.filter((s) => s.state === "fresh").length;
+  const current = running ? job.stages.find((s) => s.stage === (live?.stage ?? job.stage)) : undefined;
+  const frac = running
+    ? current ? Math.min(1, (current.index - 1 + (live?.fraction ?? job.fraction ?? 0)) / total) : 0
+    : fresh / total;
+  const done = !running && fresh === total && job.stages.length > 0;
+  const seconds = job.stages.reduce((n, s) => n + (s.seconds ?? 0), 0);
+
+  let headline: string;
+  if (job.state === "queued") headline = "排队中…";
+  else if (running) headline = current ? `第 ${current.index}/${total} 步 · ${current.title}` : "准备中…";
+  else if (done) headline = "处理完成";
+  else if (job.state === "failed") headline = "处理出错了";
+  else if (job.state === "cancelled") headline = "已停止";
+  else if (started(job)) headline = `已完成 ${fresh}/${total} 步`;
+  else headline = "还没开始";
+
+  return (
+    <section className="card stepcard" aria-labelledby="h-run">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
+        <h1 id="h-run">{headline}</h1>
+        <span className="mono muted">{Math.round(frac * 100)}%</span>
+      </div>
+      <div className="bar big" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(frac * 100)}>
+        <i style={{ width: `${frac * 100}%` }} />
+      </div>
+      {running && live?.message && <p className="muted small" style={{ margin: 0 }}>{live.message}</p>}
+      {done && <p className="lead">用时约 {Math.round(seconds)} 秒。接下来检查一下标出来的地方。</p>}
+      {job.state === "failed" && job.error && <div className="notice bad">{job.error}</div>}
+      {error && <div className="notice bad">{error}</div>}
+
+      <LoadPanel />
+
+      <ol className="runlist">
+        {rows.map((s) => {
+          const isNow = running && current?.stage === s.stage;
+          const state = isNow ? "now" : s.state === "fresh" ? "done" : "todo";
+          return (
+            <li key={s.stage} className={state}>
+              <span className={`dot ${state}`} aria-hidden="true">{isNow ? <span className="spin" /> : state === "done" ? "✓" : ""}</span>
+              <span className="name">{s.title}</span>
+              <span className="muted small note">
+                {isNow
+                  ? (live?.fraction != null ? `${Math.round(live.fraction * 100)}%` : "进行中")
+                  : state === "done" ? STEPS[s.stage]?.summary(s.metrics) : ""}
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+
+      <div className="nav-row">
+        <button type="button" className="btn" onClick={() => go("lang")} disabled={running}>← 上一步</button>
+        <span className="row" style={{ gap: 10 }}>
+          {running && <button type="button" className="btn danger" onClick={() => api.post(`/jobs/${enc}/cancel`).then(refresh)}>停止</button>}
+          {!running && !done && <button type="button" className="btn primary" onClick={start}>{started(job) ? "继续处理" : "开始处理"} →</button>}
+          {done && <button type="button" className="btn primary" onClick={() => go("review")}>下一步：审查 →</button>}
+        </span>
+      </div>
+    </section>
   );
 }

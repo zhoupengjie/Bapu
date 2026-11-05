@@ -1,8 +1,9 @@
 """Job service behind the API: a queue, one worker thread (one GPU), and an
 event hub that fans progress out to listeners.
 
-A job is one work directory under `root`; its id is the directory name. Jobs
-survive restarts because everything lives on disk (`job.json`, `manifest.json`,
+A job is one project folder (see bapu.project): anywhere on disk, found through
+the recent-projects index, or directly under `root` for older jobs. Jobs
+survive restarts because everything lives on disk (`<name>.bapu`, `manifest.json`,
 stage folders); only queue state and the live event log are in memory.
 Events carry stage names, fractions and short messages, never lyric text.
 """
@@ -22,12 +23,13 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from bapu import corrections as corr
-from bapu import jobs, pipeline, report
+from bapu import jobs, pipeline, project, report
+from bapu.monitor import LoadMonitor
 from bapu.models.registry import ModelSpec, Registry, RegistryError
 from bapu.progress import ProgressEvent
 from bapu.stages import STAGES
 from bapu.stages.base import Stage
-from bapu.workdir import WorkDir, write_json_atomic
+from bapu.workdir import WorkDir
 
 JOB_ID = re.compile(r"^[\w][\w\-.]{0,99}$")
 
@@ -114,9 +116,13 @@ class JobState:
 
 class JobService:
     def __init__(self, root: Path, registry: Registry | None = None, stages: Sequence[Stage] = STAGES,
-                 finalize: Callable[[WorkDir], Any] = report.finalize) -> None:
+                 finalize: Callable[[WorkDir], Any] = report.finalize, index: Path | None = None) -> None:
+        """`root`: default place for projects created without a folder (and older
+        jobs); `index`: the recent-projects list (default `<root>/projects.json`)."""
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
+        self.index = project.ProjectIndex(index or self.root / "projects.json")
+        self.monitor = LoadMonitor()
         self.registry = registry or Registry.load()
         self.stages = stages
         self.finalize = finalize
@@ -139,57 +145,126 @@ class JobService:
             self._worker.join(timeout=5)
             self._worker = None
 
-    # -- job directory -----------------------------------------------------------
-    def workdir(self, job_id: str) -> WorkDir:
+    # -- projects ------------------------------------------------------------------
+    # A job is a project folder: anywhere the user chose (found through the
+    # index) or, for older jobs and tests, a folder directly under `root`.
+    def _folder(self, job_id: str) -> Path | None:
         if not JOB_ID.match(job_id):
-            raise NotFound(f"没有任务 {job_id}")
-        wd = WorkDir(self.root / job_id)
-        if not (wd.root / "job.json").exists() and not wd.manifest_path.exists():
-            raise NotFound(f"没有任务 {job_id}")
-        return wd
+            return None
+        folder = self.index.get(job_id) or self.root / job_id
+        return folder if folder.is_dir() and project.is_project(folder) else None
+
+    def workdir(self, job_id: str) -> WorkDir:
+        """The project's data folder (`<folder>/.bapu`); older layouts are moved
+        there first, unless the project is being processed right now."""
+        folder = self._folder(job_id)
+        if folder is None:
+            raise NotFound(f"没有工程 {job_id}")
+        if self._state(job_id).state not in ("queued", "running"):
+            try:
+                project.migrate(folder)
+            except (OSError, project.ProjectError, ValueError) as e:
+                raise ServiceError(f"整理工程文件夹失败：{e}") from None
+        return WorkDir(project.data_dir(folder))
 
     def _meta(self, wd: WorkDir) -> dict[str, Any]:
-        p = wd.root / "job.json"
-        return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {"id": wd.root.name, "name": wd.root.name}
+        try:
+            return project.read(project.folder_of(wd.root))
+        except (project.ProjectError, ValueError) as e:
+            raise ServiceError(str(e)) from None
 
     def _state(self, job_id: str) -> JobState:
         with self._lock:
             return self._states.setdefault(job_id, JobState())
 
-    def create(self, name: str, audio: Path, lyrics: Path | None = None) -> str:
-        """New job from local files; uploads are saved into the job first."""
+    def _folder_id(self, folder: Path) -> str:
+        """Id of a project in a folder the user chose: from its path, not its
+        name (names often come from file names that contain lyric text, and ids
+        appear in URLs)."""
+        import hashlib
+
+        base = "p" + hashlib.sha1(str(Path(folder).resolve()).lower().encode("utf-8")).hexdigest()[:8]
+        return self._new_id(base)
+
+    def _new_id(self, name: str) -> str:
+        base = jobs.slug(name)
+        taken = {e["id"] for e in self.index.items()}
+        job_id, k = base, 2
+        while job_id in taken or (self.root / job_id).exists():
+            job_id, k = f"{base}-{k}", k + 1
+        return job_id
+
+    def create(self, name: str, audio: Path, lyrics: Path | None = None, folder: Path | None = None) -> str:
+        """New project. `folder` is where the user wants it (default: a new
+        folder under `root`); the inputs are copied into `<folder>/inputs/`."""
         audio = Path(audio)
         if not audio.is_file():
             raise ServiceError(f"找不到音频：{audio}")
         if lyrics is not None and not Path(lyrics).is_file():
             raise ServiceError(f"找不到歌词文件：{lyrics}")
-        base = jobs.slug(name or audio.stem)
-        job_id, k = base, 2
-        while (self.root / job_id).exists():
-            job_id, k = f"{base}-{k}", k + 1
-        wd = WorkDir(self.root / job_id)
-        wd.root.mkdir(parents=True)
-        sources = {"source": str(audio.resolve())}
-        if lyrics is not None:
-            sources["lyrics"] = str(Path(lyrics).resolve())
-        write_json_atomic(wd.root / "job.json", {"id": job_id, "name": name or audio.stem,
-                                                 "created_at": time.time(), "sources": sources})
+        name = name or audio.stem
+        job_id = self._folder_id(Path(folder)) if folder else self._new_id(name)
+        folder = Path(folder) if folder else self.root / job_id
+        if not folder.is_absolute():
+            raise ServiceError(f"工程文件夹要写完整路径：{folder}")
+        if folder.exists() and project.is_project(folder):
+            f = project.project_file(folder)
+            raise ServiceError(f"这个文件夹里已经有工程了{f'（{f.name}）' if f else ''}：换一个文件夹，或者直接打开它")
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            project.make_data_dir(folder)
+            sources = {"source": project.copy_input(folder, audio)}
+            if lyrics is not None:
+                sources["lyrics"] = project.copy_input(folder, Path(lyrics))
+            project.write(folder, {"name": name, "created_at": time.time(), "sources": sources})
+        except OSError as e:
+            raise ServiceError(f"写不进工程文件夹：{e}") from None
+        self.index.add(job_id, folder)
+        return job_id
+
+    def open_project(self, path: Path) -> str:
+        """Register a project (its `.bapu` file or its folder) and return its id."""
+        path = Path(path)
+        folder = path.parent if path.suffix.lower() == project.EXT else path
+        if not folder.is_dir() or not project.is_project(folder):
+            raise ServiceError(f"这里没有 Bapu 工程：{path}")
+        if (known := self.index.find(folder)) is not None:
+            self.index.touch(known)
+            return known
+        for d in self.root.iterdir() if self.root.exists() else []:
+            if d.is_dir() and d.resolve() == folder.resolve():  # an older job under root
+                project.ensure(folder)
+                self.index.add(d.name, folder)
+                return d.name
+        job_id = self._folder_id(folder)
+        project.ensure(folder)
+        self.index.add(job_id, folder)
         return job_id
 
     def save_upload(self, job_id: str, kind: str, filename: str, data: bytes) -> Path:
-        """Store an uploaded input inside the job (`inputs/`) and point the job at it."""
+        """Store an uploaded input inside the project (`inputs/`) and point the project at it."""
         wd = self.workdir(job_id)
         safe = Path(filename).name or kind
         dest = wd.root / "inputs" / safe
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)
+        return self._set_source(wd, kind, dest)
+
+    def set_input(self, job_id: str, kind: str, path: Path) -> Path:
+        """Copy a local file into the project and use it as its audio / lyrics."""
+        wd = self.workdir(job_id)
+        if not Path(path).is_file():
+            raise ServiceError(f"找不到文件：{path}")
+        return self._set_source(wd, kind, project.copy_input(project.folder_of(wd.root), Path(path)))
+
+    def _set_source(self, wd: WorkDir, kind: str, dest: Path) -> Path:
         meta = self._meta(wd)
         meta.setdefault("sources", {})["source" if kind == "audio" else "lyrics"] = str(dest.resolve())
-        write_json_atomic(wd.root / "job.json", meta)
+        project.write(project.folder_of(wd.root), meta)
         return dest
 
     def sources(self, wd: WorkDir) -> dict[str, Path]:
-        """Inputs for the next run: job.json, falling back to the last run's."""
+        """Inputs for the next run: the project file, falling back to the last run's."""
         out: dict[str, Path] = {}
         for name, p in (self._meta(wd).get("sources") or {}).items():
             if Path(p).exists():
@@ -200,10 +275,17 @@ class JobService:
         return out
 
     def list(self) -> list[dict[str, Any]]:
-        out = []
-        for d in sorted(self.root.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
-            if d.is_dir() and JOB_ID.match(d.name) and ((d / "job.json").exists() or (d / "manifest.json").exists()):
-                out.append(self.summary(d.name))
+        """Projects opened here (most recent first), then older jobs under `root`."""
+        out, seen = [], set()
+        for e in self.index.items():
+            if self._folder(e["id"]) is not None:
+                out.append(self.summary(e["id"]))
+                seen.add(str(Path(e["path"]).resolve()).lower())
+        if self.root.exists():
+            for d in sorted(self.root.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+                if (d.is_dir() and JOB_ID.match(d.name) and project.is_project(d)
+                        and str(d.resolve()).lower() not in seen and self.index.get(d.name) is None):
+                    out.append(self.summary(d.name))
         return out
 
     def summary(self, job_id: str) -> dict[str, Any]:
@@ -214,15 +296,29 @@ class JobService:
         attention = None
         if review.exists():
             attention = json.loads(review.read_text(encoding="utf-8"))["summary"]["attention"]
-        return {"id": job_id, "name": meta.get("name", job_id), "state": st.state, "stage": st.stage,
-                "fraction": st.fraction, "error": st.error, "has_score": (wd.root / "score.json").exists(),
-                "attention": attention, "has_lyrics": "lyrics" in self.sources(wd)}
+        score = wd.root / "score.json"
+        exports = self.exports(wd)
+        exported_at = max((f["mtime"] for f in exports), default=None)
+        folder = project.folder_of(wd.root)
+        pfile = project.project_file(folder)
+        return {"id": job_id, "name": meta.get("name", job_id), "folder": str(folder.resolve()),
+                "project_file": pfile.name if pfile else None, "state": st.state, "stage": st.stage,
+                "fraction": st.fraction, "error": st.error, "has_score": score.exists(),
+                "attention": attention, "has_lyrics": "lyrics" in self.sources(wd),
+                "exported_at": exported_at,
+                "export_stale": bool(exported_at and score.exists() and score.stat().st_mtime > exported_at)}
+
+    @staticmethod
+    def exports(wd: WorkDir) -> list[dict[str, Any]]:
+        """Files written by exports (next to the .bapu file), newest first."""
+        files = project.exports(project.folder_of(wd.root), wd.root)
+        return [{"name": f.name, "size": f.stat().st_size, "mtime": f.stat().st_mtime} for f in files]
 
     def detail(self, job_id: str) -> dict[str, Any]:
         wd = self.workdir(job_id)
         rows = pipeline.status(wd, self.registry, self.stages) if wd.manifest_path.exists() else []
         return {**self.summary(job_id), "stages": rows, "params": wd.load_params(),
-                "sources": {k: Path(v).name for k, v in self.sources(wd).items()}}
+                "sources": {k: Path(v).name for k, v in self.sources(wd).items()}, "exports": self.exports(wd)}
 
     # -- running -----------------------------------------------------------------
     def enqueue(self, job_id: str, req: RunRequest) -> None:
@@ -239,7 +335,7 @@ class JobService:
         except pipeline.PipelineError as e:
             raise ServiceError(str(e)) from None
         if missing:
-            raise Conflict("缺少模型，先在模型页下载", [m.id for m in missing])
+            raise Conflict("缺少模型，先下载", [m.id for m in missing])
         wd.save_params(overrides)
         with self._lock:
             st.state, st.error, st.cancel = "queued", None, False

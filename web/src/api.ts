@@ -13,6 +13,8 @@ export type StageRow = {
 export type JobSummary = {
   id: string;
   name: string;
+  folder: string; // the project folder
+  project_file: string | null; // <name>.bapu inside it
   state: "idle" | "queued" | "running" | "done" | "failed" | "cancelled";
   stage: string | null;
   fraction: number | null;
@@ -20,12 +22,15 @@ export type JobSummary = {
   has_score: boolean;
   attention: number | null;
   has_lyrics: boolean;
+  exported_at: number | null; // newest file in export/, unix seconds
+  export_stale: boolean; // the score changed after that export
 };
 
 export type JobDetail = JobSummary & {
   stages: StageRow[];
   params: Record<string, Record<string, unknown>>;
   sources: Record<string, string>;
+  exports: { name: string; size: number; mtime: number }[];
 };
 
 export type StageInfo = {
@@ -98,17 +103,11 @@ export type ScoreLine = {
   last_note: number | null;
 };
 
-export type HarmonyNote = {
-  index: number; start: number; dur: number; pitch: number; cents: number; kind: Kind; lyric: string;
-  lang: string; line: number; interval: number | null; level_db: number | null; flags: string[];
-};
-
 export type Score = {
   tempo: { bpm: number; time_signature: string; source: string; confidence: string };
   lang: string;
   lines: ScoreLine[];
   notes: ScoreNote[];
-  harmony?: HarmonyNote[];
 };
 
 export type ReviewLine = ScoreLine & {
@@ -122,7 +121,6 @@ export type ReviewLine = ScoreLine & {
 export type Review = {
   summary: Record<string, number | string | boolean>;
   dictation: { kind: string; line: number; time: number | null; conf: number | null; status: string; attention: boolean }[];
-  harmony?: { time: number; note: number; line: number; status: string; attention: boolean }[];
   merges: { time: number; note: number | null; line: number | null; score: number; status: string; attention: boolean }[];
   sustains: { time: number; note: number; line: number; onset: number | null; after_rest: boolean; fixed: boolean; attention: boolean }[];
   lines: ReviewLine[];

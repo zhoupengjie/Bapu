@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, fmtSize, type JobDetail } from "../api";
-import { JobHeader } from "../App";
+import { useJob } from "../App";
+import { inDesktop, revealInFolder } from "../desktop";
 
 const FORMATS = [
   { id: "svp", name: "SynthV 工程（.svp）", points: ["每个音符带歌词和语言；歌手留空，在 SV 里自己选", "时间按秒换算成 blick，不量化"] },
@@ -12,10 +13,16 @@ type Stats = { stats: Record<string, number>; lines: number[]; applied: boolean;
 
 export default function ExportPage({ id }: { id: string }) {
   const enc = encodeURIComponent(id);
+  const { refresh } = useJob();
+  // in the desktop window: show an exported file in Explorer
+  const reveal = (name: string) => {
+    if (!inDesktop() || !job) return null;
+    const sep = job.folder.includes("\\") ? "\\" : "/";
+    return <> <button type="button" className="link" style={{ padding: 0 }} onClick={() => revealInFolder(`${job.folder}${sep}${name}`)}>在文件夹中显示</button></>;
+  };
   const [job, setJob] = useState<JobDetail | null>(null);
   const [formats, setFormats] = useState<Record<string, boolean>>({ svp: true, mid: true, paste: false });
   const [tracks, setTracks] = useState<Record<string, boolean>>({ accompaniment: true, lead_dry: true });
-  const [harmony, setHarmony] = useState(true);
   const [files, setFiles] = useState<{ format: string; name: string; size: number }[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -32,9 +39,11 @@ export default function ExportPage({ id }: { id: string }) {
     try {
       const audio = Object.entries(tracks).filter(([, on]) => on).map(([k]) => k).join(",") || "none";
       const r = await api.post<{ files: typeof files }>(`/jobs/${enc}/export`, {
-        formats: Object.entries(formats).filter(([, on]) => on).map(([k]) => k), audio, harmony,
+        formats: Object.entries(formats).filter(([, on]) => on).map(([k]) => k), audio,
       });
       setFiles(r.files);
+      api.get<JobDetail>(`/jobs/${enc}`).then(setJob).catch(() => {});
+      refresh();
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -56,10 +65,8 @@ export default function ExportPage({ id }: { id: string }) {
   }
 
   return (
-    <main className="page">
-      <JobHeader job={job} tab="export" />
+    <div className="pagebody">
       {error && <div className="notice bad">{error}</div>}
-      {job && !job.has_score && <div className="notice warn">还没有乐谱：先在进度页跑完整个流程。</div>}
       <div className="row">
         <section className="card grow" aria-labelledby="exp">
           <h2 id="exp">导出</h2>
@@ -79,20 +86,26 @@ export default function ExportPage({ id }: { id: string }) {
               )}
             </div>
           ))}
-          <label style={{ display: "flex", gap: 10, alignItems: "center" }}>
-            <input type="checkbox" checked={harmony} onChange={() => setHarmony(!harmony)} />
-            <span>包含和声轨（.svp 里第二条人声轨，MIDI 第 2 轨）</span>
-          </label>
           <div className="row" style={{ gap: 12, alignItems: "center" }}>
             <button type="button" className="btn primary" disabled={busy || !job?.has_score || !Object.values(formats).some(Boolean)} onClick={exportNow}>
               {busy ? "生成中…" : "生成"}
             </button>
-            <span className="muted small">文件也会存到工作目录的 export/ 里。</span>
+            <span className="muted small">文件存在工程文件夹里（.bapu 文件旁边）；同名文件如果不是 Bapu 写的（比如在 SV 里改过保存的），不会被覆盖，而是另存为“(2)”。</span>
           </div>
+          {files.length === 0 && !!job?.exports.length && (
+            <div className="small" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <span className="muted">上次导出的文件{job.export_stale ? "（之后乐谱又改过，建议重新生成）" : ""}：</span>
+              <ul style={{ margin: 0, paddingLeft: 20 }}>
+                {job.exports.map((f) => (
+                  <li key={f.name}><a href={`/api/jobs/${enc}/export/${encodeURIComponent(f.name)}`} download>{f.name}</a> <span className="muted">{fmtSize(f.size)} · {new Date(f.mtime * 1000).toLocaleString()}</span>{reveal(f.name)}</li>
+                ))}
+              </ul>
+            </div>
+          )}
           {files.length > 0 && (
             <ul style={{ margin: 0, paddingLeft: 20 }}>
               {files.map((f) => (
-                <li key={f.name}><a href={`/api/jobs/${enc}/export/${encodeURIComponent(f.name)}`} download>{f.name}</a> <span className="muted small">{fmtSize(f.size)}</span></li>
+                <li key={f.name}><a href={`/api/jobs/${enc}/export/${encodeURIComponent(f.name)}`} download>{f.name}</a> <span className="muted small">{fmtSize(f.size)}</span>{reveal(f.name)}</li>
               ))}
             </ul>
           )}
@@ -111,11 +124,11 @@ export default function ExportPage({ id }: { id: string }) {
               <span>确认合并 {preview.stats.merge_confirm ?? 0} · 拒绝合并 {preview.stats.merge_reject ?? 0} · 字幕修正 {preview.stats.line_text ?? 0} · 人工版本 {preview.stats.line_version ?? 0} 句 · 音高 {preview.stats.pitch ?? 0}</span>
               {preview.lines.length > 0 && <span className="muted">人工版本：{preview.lines.map((l) => `L${String(l).padStart(2, "0")}`).join(" ")}</span>}
               {preview.stats.needs_rerun ? <span className="muted">这次只有合并修正：写入后重跑，再读一次。</span> : null}
-              {preview.applied && <span style={{ color: "var(--ok)" }}>已写入。到进度页重跑生效。</span>}
+              {preview.applied && <span style={{ color: "var(--ok)" }}>已写入。回到「自动处理」点“继续处理”后生效。</span>}
             </div>
           )}
         </aside>
       </div>
-    </main>
+    </div>
   );
 }

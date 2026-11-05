@@ -40,11 +40,25 @@ uv run bapu run "<歌曲>.wav" --model lead.dereverb_model=none
 uv run bapu status work/<文件名>
 uv run bapu corrections from-svp work/<文件名> "<工程>.svp"   # 把在 SV 里改过的地方读成修正
 uv run bapu eval work/<文件名> "<工程>.svp" --lines 2,10      # 自动版本和 SV 里的版本逐句对比
-uv run bapu export work/<文件名>                # 导出 MIDI（带歌词，含和声轨）、.svp 工程（人声 + 和声 + 伴奏 + 主唱干声）、粘贴文件
+uv run bapu export work/<文件名>                # 导出 MIDI（带歌词）、.svp 工程（人声 + 伴奏 + 主唱干声）、粘贴文件
 uv run bapu serve                            # 本机网页界面 + API：http://127.0.0.1:8765/
+uv run bapu open "<工程文件夹>\<歌名>.bapu"     # 打开工程（服务没开会先在后台启动）
+uv run bapu register                         # 双击 .bapu 用 Bapu 打开（只改当前用户的文件关联；--remove 取消）
 uv run pytest                                # 单元测试（只用虚构数据）
 ```
 
+- 原曲可以是 WAV、FLAC、MP3，也可以是 MP4 / M4A / MOV / MKV 等音频或视频文件：soundfile 读不了的格式，
+  在第一步用 PyAV（自带 FFmpeg，不用另装）取出第一条音轨，存成 `01_separate/source.wav` 再分离。
+- 工程：每首歌一个工程文件夹，由用户在新建时选（默认在原曲旁边，`<歌名> - Bapu`）。外面只有 `<歌名>.bapu`
+  （小 JSON：名字、原曲和歌词的位置）和导出的 `.svp` / `.mid`；复制进来的原曲和歌词、修正、每一步的结果、审查报告
+  都在隐藏的 `.bapu/` 文件夹里。导出不会覆盖不是 Bapu 写的同名文件（例如在 SV 里改过再保存的），会另存为 `(2)`。
+  旧的工程（中间结果直接放在工程文件夹里）第一次打开时自动整理进 `.bapu/`，已经算好的步骤不用重算。
+  整个文件夹可以移动；双击 `.bapu`（先运行一次 `bapu register`）或 `bapu open` 打开。最近打开过的工程记在 `work/projects.json`。
+  网页里选文件和文件夹用的是系统对话框（由本机服务弹出），所以能拿到真实路径；拖进页面的文件会上传后复制进工程。
+- 桌面窗口（Tauri，`desktop/`）：`cd desktop && npm install && npm run build`，生成
+  `desktop/src-tauri/target/release/Bapu.exe`。它在后台用 `.venv` 启动 `bapu serve`（随机端口，窗口关了服务就退出），
+  在窗口里显示同一套网页界面；选文件用系统对话框，外部链接用默认浏览器打开。建好后再运行一次 `bapu register`，
+  双击 `.bapu` 就用这个窗口打开（已经开着时在原窗口打开）。`npm run bundle` 打 NSIS 安装包（还没处理 Python 环境的分发）。
 - 网页界面：第一次先 `cd web && npm install && npm run build`，之后 `uv run bapu serve` 就会同时提供界面和 API。
   开发前端时用 `npm --prefix web run dev`（http://127.0.0.1:5173，/api 代理到 8765）。
 - 输出：`score.json`（乐谱）、`review.md` / `review.json`（审查报告，只有时间、编号和置信度）。
