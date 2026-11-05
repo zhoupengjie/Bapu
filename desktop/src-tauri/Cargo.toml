@@ -1,6 +1,6 @@
 [package]
 name = "bapu-desktop"
-version = "0.2.1"
+version = "0.3.0"
 description = "Bapu desktop shell: starts the local Python service and shows the web UI in a window"
 edition = "2021"
 publish = false
