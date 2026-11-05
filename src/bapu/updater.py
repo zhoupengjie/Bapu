@@ -30,7 +30,8 @@ from bapu import __version__, paths
 from bapu.sources import mirror_urls
 from bapu.workdir import write_json_atomic
 
-LATEST = "https://github.com/zhoupengjie/Bapu/releases/latest/download/latest.json"
+RELEASES = "https://github.com/zhoupengjie/Bapu/releases"
+LATEST = f"{RELEASES}/latest/download/latest.json"
 
 
 def parse_version(v: str) -> tuple[int, ...]:
@@ -88,7 +89,7 @@ class Updater:
         with self._lock:
             return {"current": __version__, "state": self.state, "latest": self.latest, "error": self.error,
                     "done": self.done, "total": self.total, "checked_at": self.checked_at,
-                    "can_install": self.can_install(), "staged": (self.folder / "staged.json").exists(), "last": last}
+                    "can_install": self.can_install(), "page": f"{RELEASES}/latest", "staged": (self.folder / "staged.json").exists(), "last": last}
 
     def check(self) -> dict[str, Any]:
         with self._lock:

@@ -2,7 +2,7 @@
 
 Windows:
 
-    uv run python scripts/build_portable.py --out "D:/Program Files/Bapu"
+    uv run python scripts/build_portable.py --out "<program folder>"
 
 Result (about 40 MB; Python, packages and models are not included):
 

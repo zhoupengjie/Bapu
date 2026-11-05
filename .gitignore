@@ -39,3 +39,7 @@ desktop/build.log
 
 # Portable build output (scripts/build_portable.py)
 dist/
+# this machine's preview server (its own model folder)
+.claude/launch.json
+# Claude Code tool config on this machine (SynthV bridge next to this checkout)
+.mcp.json

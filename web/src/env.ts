@@ -17,6 +17,7 @@ export type UpdateStatus = {
   state: "idle" | "checking" | "latest" | "available" | "downloading" | "ready" | "error";
   latest: { version: string; date?: string; notes?: string; zip: { size: number } } | null;
   error: string | null; done: number; total: number | null; can_install: boolean; staged: boolean;
+  page?: string; // the release page (the Mac app and a checkout update from there)
 };
 type Variant = { id: string; label: string; detail: string; size_gb: number; experimental: boolean; available: boolean; note: string; recommended: boolean };
 export type SetupInfo = {

@@ -37,6 +37,6 @@ it records the validated pipeline, parameters, measured results and pitfalls.
 
 ## Related project
 
-`D:\Projects\test_project\synthv-agent-bridge` is a separate, network-free MCP
+`../synthv-agent-bridge` (next to this checkout) is a separate, network-free MCP
 Runtime for a running SynthV instance. Bapu may hand results to it (MIDI with
 lyric events via `import_monophonic_score`), but Bapu code must not live there.

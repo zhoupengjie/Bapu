@@ -107,7 +107,7 @@ export default function EnvPage() {
       Object.assign(bapu, { name: `Bapu ${env.updateAvailable}`, done: false, st: <>{warn(t("有新版本"))}{zip ? ` · ${gb(zip)} GB` : ""}</> });
     } else if (update.state === "available") {
       // the Mac app (and a development checkout) does not replace itself: get it from the release page
-      bapu.st = <a href="https://github.com/zhoupengjie/Bapu/releases/latest" target="_blank" rel="noreferrer">{t("有新版本 {v}，去下载", { v: latest })}</a>;
+      bapu.st = <a href={update.page ?? "https://github.com/zhoupengjie/Bapu/releases/latest"} target="_blank" rel="noreferrer">{t("有新版本 {v}，去下载", { v: latest })}</a>;
     }
   }
 

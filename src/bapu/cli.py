@@ -10,7 +10,7 @@ from typing import Any
 import click
 import yaml
 
-from bapu import compare, jobs, pipeline, project, report
+from bapu import compare, jobs, paths, pipeline, project, report
 from bapu import corrections as corr_mod
 from bapu.corrections import CorrectionsError
 from bapu.stages.lyrics import check_langs
@@ -114,7 +114,7 @@ def run(audio: Path, out: Path | None, from_stage: str | None, until: str | None
         sets: tuple[str, ...], models: tuple[str, ...], accept_licenses: bool,
         lyrics: Path | None, lang: str | None) -> None:
     """处理一首歌。没变的步骤直接用缓存。--out 是工程文件夹（默认 work/<文件名>），中间结果在它的 .bapu/ 里。"""
-    folder = out or Path("work") / jobs.slug(audio.stem)
+    folder = out or paths.dev_root() / "work" / jobs.slug(audio.stem)
     if project.is_project(folder):
         project.migrate(folder)
     wd = WorkDir(project.data_dir(folder))
@@ -383,10 +383,7 @@ def models_rm(model_id: str) -> None:
 # -- projects: open from Explorer --------------------------------------------------------
 def _program_dir() -> Path:
     """The checkout Bapu runs from (`.cache/`, `work/` and `web/dist` are relative to it)."""
-    import bapu
-
-    root = Path(bapu.__file__).resolve().parents[2]
-    return root if (root / "pyproject.toml").exists() else Path.cwd()
+    return paths.dev_root()
 
 
 def _http(method: str, url: str, body: dict[str, Any] | None = None, timeout: float = 5) -> Any:

@@ -1,7 +1,9 @@
 """Where Bapu keeps model weights and its own data.
 
-Development: relative to the current directory (the checkout): `.cache/` for
-weights, `work/` for the recent-projects list.
+Development: inside the checkout Bapu runs from (wherever the command is
+started): `.cache/` for weights, `work/` for the recent-projects list and the
+default project folders. An installed package without a checkout uses the
+current directory.
 
 Portable app: the desktop shell sets `BAPU_HOME` to the program folder and
 `BAPU_CACHE_DIR` to it as well, so everything stays in that folder:
@@ -24,6 +26,12 @@ from pathlib import Path
 from typing import Any
 
 
+def dev_root() -> Path:
+    """The checkout this code runs from (it has pyproject.toml), else the current directory."""
+    root = Path(__file__).resolve().parents[2]
+    return root if (root / "pyproject.toml").is_file() else Path.cwd()
+
+
 def home() -> Path | None:
     """The portable program folder, when running from one."""
     h = os.environ.get("BAPU_HOME")
@@ -32,7 +40,8 @@ def home() -> Path | None:
 
 def cache_dir() -> Path:
     """Root of downloaded weights: `<cache>/models/...` (`.cache/` in a checkout)."""
-    return Path(os.environ.get("BAPU_CACHE_DIR", ".cache")).resolve()
+    c = os.environ.get("BAPU_CACHE_DIR")
+    return Path(c).resolve() if c else dev_root() / ".cache"
 
 
 def models_dir() -> Path:
@@ -50,7 +59,7 @@ def data_dir() -> Path:
     if d:
         return Path(d).resolve()
     h = home()
-    return h / "data" if h else Path("work").resolve()
+    return h / "data" if h else dev_root() / "work"
 
 
 def runtime_info() -> dict[str, Any] | None:
