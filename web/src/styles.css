@@ -204,9 +204,10 @@ input, select, textarea { font: inherit; color: inherit; }
 
 .lang-btn { font-size: 12px; font-weight: 600; }
 /* English labels are longer */
-html[lang="en"] .dl { grid-template-columns: 18px 128px minmax(0, 1fr) 200px; }
-html[lang="en"] .row .k { width: 128px; }
-@media (max-width: 600px) { html[lang="en"] .dl { grid-template-columns: 18px minmax(0, 1fr) auto; } }
+html[lang="en"] .dl, html[lang="ja"] .dl { grid-template-columns: 18px 150px minmax(0, 1fr) 200px; }
+html[lang="en"] .row .k { width: 150px; }
+html[lang="ja"] .row .k { width: 190px; }
+@media (max-width: 600px) { html[lang="en"] .dl, html[lang="ja"] .dl { grid-template-columns: 18px minmax(0, 1fr) auto; } }
 
 /* flow: the node graph and the selected node's panel */
 .flow { display: flex; flex-direction: column; gap: 16px; max-width: 880px; }

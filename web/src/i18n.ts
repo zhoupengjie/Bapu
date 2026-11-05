@@ -1,29 +1,33 @@
-// Interface language: 简体中文 (the source text) or English.
+// Interface language: 简体中文 (the source text), English or 日本語.
 //
-// Every visible string is written in Simplified Chinese and passed through t(); English
-// looks it up in web/src/locales/*.ts (one file per page, merged here). Placeholders
+// Every visible string is written in Simplified Chinese and passed through t(); the other
+// languages look it up in web/src/locales/*.ts (one file per page, merged here). Placeholders
 // are {name}. Text that comes from the service or the desktop shell (step titles, device
 // labels, error messages) goes through t() too: known strings are translated, others shown as is.
 // The first choice follows the system language; the sidebar button changes it.
 import { useEffect, useState } from "react";
 import * as all from "./locales";
 
-export type Lang = "zh-CN" | "en";
+export type Lang = "zh-CN" | "en" | "ja";
 export const LANGS: { id: Lang; label: string }[] = [
-  { id: "zh-CN", label: "简体中文" }, { id: "en", label: "English" },
+  { id: "zh-CN", label: "简体中文" }, { id: "en", label: "English" }, { id: "ja", label: "日本語" },
 ];
 type Dict = Record<string, string>;
 const KEY = "bapu.lang";
 const EVENT = "bapu-lang";
 
-const DICTS: Record<Exclude<Lang, "zh-CN">, Dict> = { en: {} };
-for (const part of Object.values(all) as { en?: Dict }[]) Object.assign(DICTS.en, part.en ?? {});
+const DICTS: Record<Exclude<Lang, "zh-CN">, Dict> = { en: {}, ja: {} };
+for (const part of Object.values(all) as { en?: Dict; ja?: Dict }[]) {
+  Object.assign(DICTS.en, part.en ?? {});
+  Object.assign(DICTS.ja, part.ja ?? {});
+}
 
-/** The system's language: Chinese of any kind is shown in Simplified Chinese, anything else in English. */
+/** The system's language: any Chinese → Simplified Chinese, Japanese → Japanese, anything else → English. */
 export function systemLang(): Lang {
   for (const l of navigator.languages?.length ? navigator.languages : [navigator.language]) {
     const s = (l || "").toLowerCase();
     if (s.startsWith("zh")) return "zh-CN";
+    if (s.startsWith("ja")) return "ja";
     if (s) return "en";
   }
   return "zh-CN";
@@ -32,7 +36,7 @@ export function systemLang(): Lang {
 function stored(): Lang | null {
   try {
     const v = localStorage.getItem(KEY);
-    return v === "zh-CN" || v === "en" ? v : null;
+    return v === "zh-CN" || v === "en" || v === "ja" ? v : null;
   } catch {
     return null;
   }

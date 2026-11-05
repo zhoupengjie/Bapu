@@ -1,13 +1,16 @@
 """Fuse dictation (what is sung, how many syllables) with a reference lyric file
 (which characters).
 
-Both token streams are reduced to sounds (toneless Jyutping for Chinese
-characters, lower-case letters for English words) and aligned globally. Between
+Both token streams are reduced to sounds (toneless Jyutping or pinyin for
+Chinese characters, Hepburn letters for Japanese morae, lower-case letters for
+English words) and aligned globally. Between
 two matching sounds lies a gap with reference tokens R and dictated tokens D:
 
 - R empty, D Chinese only (at most `max_insert`): the reference probably
   missed words. D is inserted as optional tokens; the aligner keeps them only
-  if the recording supports them.
+  if the recording supports them. Japanese: if D is only vowels that lengthen
+  the mora before (とう, かあ; a reference in romaji writes ō or oo once), it
+  is a held note, not a missing word: ignored and reported as `long_vowel`.
 - D empty: keep R (dictation often drops syllables).
 - English on either side: keep R (dictation of sung English is poor).
 - Same length, Chinese only: each R token gets its dictated token as an
@@ -42,7 +45,7 @@ class Tok:
     line: int
     time: float | None = None
     source: str = "ref"  # ref | dictation | both | user
-    lang: str = "yue"  # language of a Chinese token (yue | zh); Latin tokens are English
+    lang: str = "yue"  # language of a CJK token (yue | zh | ja); Latin tokens are English
     optional: bool = False
     alt: "Tok | None" = None
     group: int | None = None  # words inserted together are kept or dropped together
@@ -54,16 +57,20 @@ class Tok:
 
 
 def keys_for(tokens: list[str], lang: str = "yue") -> list[str]:
-    """Sound keys: Jyutping (`yue`) or pinyin (`zh`) for Chinese, letters for English."""
-    cjk = [t for t in tokens if not g2p.is_latin(t)]
+    """Sound keys: Jyutping (`yue`) or pinyin (`zh`) for Chinese, Hepburn
+    letters for Japanese (`ja`, and any kana token), letters for English."""
+    langs = [g2p.token_lang(t, lang) for t in tokens]
+    cjk = [t for t, tl in zip(tokens, langs) if tl not in ("en", "ja")]
     rom = iter(g2p.cjk_letters(cjk, lang))
-    return [g2p.english_letters(t) if g2p.is_latin(t) else next(rom) for t in tokens]
+    return [g2p.english_letters(t) if tl == "en" else g2p.japanese_letters([t])[0] if tl == "ja" else next(rom)
+            for t, tl in zip(tokens, langs)]
 
 
 def dictation_tokens(phrases: list[dict[str, Any]], tokenize, lang_at=None) -> list[Tok]:
-    """Dictated tokens with an estimated time each. `lang_at(time)` gives the
-    Chinese language at that time (default Cantonese), so each token is keyed
-    like the reference line sung there."""
+    """Dictated tokens with an estimated time each. `tokenize` must read the
+    text in the song's languages; `lang_at(time)` gives the CJK language at that
+    time (default Cantonese), so each token is keyed like the reference line
+    sung there."""
     out = []
     for p_no, p in enumerate(phrases, 1):
         toks = tokenize(p["text"])
@@ -96,15 +103,52 @@ def split_jyutping(key: str) -> tuple[str, str]:
     return "", key
 
 
-def sub_cost(x: str, y: str, x_latin: bool, y_latin: bool) -> float:
+# Japanese consonants that differ only in voicing (or are written apart but
+# sound close) count as one family for near-homophones.
+JA_FAMILY = {"g": "k", "gy": "ky", "z": "s", "sh": "s", "j": "s", "d": "t", "ch": "t", "ts": "t",
+             "b": "h", "p": "h", "f": "h", "by": "hy", "py": "hy"}
+
+
+def split_mora(key: str) -> tuple[str, str]:
+    """Hepburn letters of a mora -> (consonant, vowel); ん is ("n", "")."""
+    cons = key.rstrip("aeiou")
+    return cons, key[len(cons):]
+
+
+LONG_AFTER = {("o", "u"), ("e", "i")}  # おう and えい are read as long o / e
+
+
+def held_vowels(prev: str, keys: list[str]) -> bool:
+    """Whether Japanese morae `keys` are bare vowels that only hold the vowel of
+    the mora `prev` (か + あ, と + う, せ + い)."""
+    v = split_mora(prev)[1][-1:]
+    for k in keys:
+        if not v or k not in ("a", "i", "u", "e", "o") or not (k == v or (v, k) in LONG_AFTER):
+            return False
+        v = k
+    return True
+
+
+def sub_cost(x: str, y: str, x_latin: bool, y_latin: bool, japanese: bool = False) -> float:
     """0 for the same sound; near-homophones (same final, or same initial) cost
-    less than an insertion so they pair up instead of opening a gap."""
+    less than an insertion so they pair up instead of opening a gap.
+
+    Japanese morae share only five vowels, so there a near-homophone needs the
+    same vowel and a consonant of the same family (か / が), or the same
+    consonant (か / こ)."""
     if x == y:
         return 0.0
     # SUB_EPS breaks ties toward paths with more exact matches.
     if x_latin != y_latin:
         return SUB_MIXED + SUB_EPS
     if x_latin:
+        return SUB_SAME_SCRIPT + SUB_EPS
+    if japanese:
+        (xc, xv), (yc, yv) = split_mora(x), split_mora(y)
+        if xv == yv and JA_FAMILY.get(xc, xc) == JA_FAMILY.get(yc, yc):
+            return 0.4
+        if xc and xc == yc:
+            return 0.7
         return SUB_SAME_SCRIPT + SUB_EPS
     (xi, xf), (yi, yf) = split_jyutping(x), split_jyutping(y)
     if xf == yf:
@@ -114,15 +158,15 @@ def sub_cost(x: str, y: str, x_latin: bool, y_latin: bool) -> float:
     return SUB_SAME_SCRIPT + SUB_EPS
 
 
-def align(a: list[str], b: list[str], a_latin: list[bool], b_latin: list[bool], anchored: bool = False
-          ) -> list[tuple[int | None, int | None]]:
+def align(a: list[str], b: list[str], a_latin: list[bool], b_latin: list[bool], anchored: bool = False,
+          japanese: bool = False) -> list[tuple[int | None, int | None]]:
     """Global alignment; pairs of indices (None = gap). With `anchored`, only
     exact sounds and near-homophones may pair; anything else becomes an
-    insertion plus a deletion."""
+    insertion plus a deletion. `japanese`: the keys are morae (see `sub_cost`)."""
     far = 2 * INDEL + 1
 
     def cost(i: int, j: int) -> float:
-        c = sub_cost(a[i], b[j], a_latin[i], b_latin[j])
+        c = sub_cost(a[i], b[j], a_latin[i], b_latin[j], japanese)
         return far if anchored and c >= CLOSE else c
 
     n, m = len(a), len(b)
@@ -177,8 +221,9 @@ def fuse(ref: list[Tok], dic: list[Tok], *, locked_lines: set[int] = frozenset()
     near-homophone pairs inside it become anchors, and each stretch between
     anchors is an insertion, a deletion, or (same length) a substitution.
     """
+    japanese = any(t.lang == "ja" for t in ref) or any(t.lang == "ja" for t in dic)
     pairs = prefer_exact(align([t.key for t in ref], [t.key for t in dic], [t.latin for t in ref],
-                               [t.latin for t in dic], anchored=anchored), ref, dic)
+                               [t.latin for t in dic], anchored=anchored, japanese=japanese), ref, dic)
     out: list[Tok] = []
     events: list[dict[str, Any]] = []
     gap_r: list[Tok] = []
@@ -194,8 +239,12 @@ def fuse(ref: list[Tok], dic: list[Tok], *, locked_lines: set[int] = frozenset()
         line = R[0].line if R else prev_line
         when = Dg[0].time if Dg else None
         if not R:
+            prev = out[-1] if out and not out[-1].latin else None
             if line in locked_lines:
                 events.append({"type": "extra_ignored", "line": line, "time": when, "count": len(Dg), "reason": "locked"})
+            elif japanese and prev and all(not t.latin for t in Dg) and held_vowels(prev.key, [t.key for t in Dg]):
+                events.append({"type": "extra_ignored", "line": line, "time": when, "count": len(Dg),
+                               "reason": "long_vowel"})
             elif all(not t.latin for t in Dg) and len(Dg) <= max_insert:
                 gid = next(_GROUPS)
                 for t in Dg:
@@ -231,7 +280,8 @@ def fuse(ref: list[Tok], dic: list[Tok], *, locked_lines: set[int] = frozenset()
                            "reason": "length"})
 
     for i, j in pairs:
-        cost = sub_cost(ref[i].key, dic[j].key, ref[i].latin, dic[j].latin) if i is not None and j is not None else None
+        cost = (sub_cost(ref[i].key, dic[j].key, ref[i].latin, dic[j].latin, japanese)
+                if i is not None and j is not None else None)
         if cost is not None and cost < CLOSE:
             flush()
             t = ref[i]

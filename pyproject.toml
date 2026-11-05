@@ -40,6 +40,8 @@ dependencies = [
     "av>=19",
     "nvidia-ml-py>=12",
     "psutil>=6",
+    "sudachipy>=0.7.0",
+    "sudachidict-core>=20261015",
 ]
 
 [build-system]

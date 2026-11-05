@@ -25,7 +25,12 @@ nothing is reported as stale in the review report, never dropped.
       bpm: 125
     - type: line_lang
       line: 7
-      lang: en
+      lang: en             # yue | zh (Chinese songs) | ja (Japanese songs: read the line's
+                           # Latin words as romaji) | en (English; in a Japanese song the
+                           # line's Latin words then stay English)
+    - type: split          # where the assign stage cut a note carrying several syllables
+      at: 31.42            # = onset of the second piece
+      action: reject       # reject (keep the note whole) | confirm (cut here)
     - type: line_text      # subtitle typo fix (contains lyric text; stays local)
       line: 9
       text: "..."
@@ -52,6 +57,7 @@ TYPES: dict[str, tuple[str, ...]] = {
     "tempo": ("bpm",),
     "line_lang": ("line", "lang"),
     "line_text": ("line", "text"),
+    "split": ("at", "action"),
 }
 CHOICES = {"action": {"confirm", "reject"}, "kind": {"word", "sustain", "cont"}}
 
@@ -81,7 +87,7 @@ def load(path: Path) -> list[dict[str, Any]]:
         if missing:
             raise CorrectionsError(f"{path.name} 第 {i} 条（{entry['type']}）缺少 {', '.join(missing)}")
         for k, allowed in CHOICES.items():
-            if k in entry and entry["type"] in ("merge", "kind") and entry[k] not in allowed:
+            if k in entry and entry["type"] in ("merge", "kind", "split") and entry[k] not in allowed:
                 raise CorrectionsError(f"{path.name} 第 {i} 条：{k} 应该是 {', '.join(sorted(allowed))} 之一")
         e = copy.deepcopy(entry)
         e["_id"] = i

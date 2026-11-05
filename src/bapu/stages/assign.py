@@ -13,8 +13,27 @@ Corrections enter as constraints or replacements:
   between the automatic and the manual version only happens where both have
   used the same number of syllables, so nothing is duplicated or dropped.
 - `pitch`, `tempo`: replace the value in the score.
+- `split`: `reject` keeps a note whole where it would be split; `confirm`
+  splits it there.
 
-The result's word sequence is checked against the lyric file token by token.
+Several syllables on one transcribed note: Japanese is often sung with several
+morae on one pitch, and the transcriber gives them one note. So (always for
+Japanese, otherwise only when there are more syllables than notes) a note is
+split at the aligned start of a further syllable inside it, if the aligner was
+confident about that syllable (`split_conf`) and both pieces are at least
+`split_min_s` long. The pieces keep the pitch; every split is listed in the
+review report.
+
+A syllable may also stay without a note, at a cost that grows with how well
+the aligner supports it (`drop_cost + drop_conf_cost * support`; support is the
+syllable's confidence or its line's mean confidence, whichever is higher). So
+lines the lead does not sing (backing vocals, say) are left out instead of
+failing the run or pushing every later syllable off its note; they are listed
+in the review report with their times. A well-aligned syllable costs more to
+leave out than the furthest placement (`cap`).
+
+The result's word sequence is checked against the lyric file token by token
+(the placed tokens).
 """
 
 from __future__ import annotations
@@ -77,6 +96,129 @@ def dp_assign(
     return path[::-1]
 
 
+def dp_assign_dropping(
+    syl_t: np.ndarray, onsets: np.ndarray, ends: np.ndarray, drop: np.ndarray, *,
+    gap_pen: float, lead_pen: float, cap: float, rest_gap: float,
+    forbid: np.ndarray | None = None, require: np.ndarray | None = None,
+) -> list[int]:
+    """Like `dp_assign`, but syllable i may also stay without a note at cost
+    `drop[i]`; its entry in the result is then -1."""
+    n_syl, m = len(syl_t), len(onsets)
+    gaps = np.r_[np.inf, onsets[1:] - ends[:-1]]
+    skip = np.where(gaps > rest_gap, gap_pen, 0.0)
+    if require is not None:
+        skip = skip + np.where(require, BIG, 0.0)
+    s_cum = np.cumsum(skip)
+    before = np.r_[0.0, s_cum[:-1]]
+    cost = np.minimum(np.abs(syl_t[:, None] - onsets[None, :]), cap)
+    if forbid is not None:
+        cost[:, forbid] = BIG
+    req_cost = np.where(require, BIG, 0.0) if require is not None else np.zeros(m)
+    lead = lead_pen * np.arange(m) + np.r_[0.0, np.cumsum(req_cost)[:-1]]
+
+    # dp[i, j]: syllables 0..i settled, the last placed one on note j.
+    # back: -2 = syllable i dropped, -1 = first placed syllable, else previous note.
+    dp = np.full((n_syl, m), np.inf)
+    back = np.full((n_syl, m), -3, dtype=int)
+    none = 0.0  # all syllables so far dropped
+    for i in range(n_syl):
+        prev = dp[i - 1] - s_cum if i else np.full(m, np.inf)
+        best, arg = np.inf, -1
+        for j in range(m):
+            via_prev = best + before[j] if arg >= 0 else np.inf
+            first = none + lead[j]
+            place, src = (via_prev, arg) if via_prev <= first else (first, -1)
+            place += cost[i, j]
+            dropped = dp[i - 1, j] + drop[i] if i else np.inf
+            if dropped < place:
+                dp[i, j], back[i, j] = dropped, -2
+            else:
+                dp[i, j], back[i, j] = place, src
+            if i and prev[j] < best:
+                best, arg = prev[j], j
+        none += drop[i]
+    final = dp[-1] + (s_cum[-1] - s_cum)
+    j = int(np.argmin(final))
+    if not np.isfinite(final[j]):
+        raise ValueError("找不到可行的分配")
+    path = [-1] * n_syl
+    for i in range(n_syl - 1, -1, -1):
+        b = back[i, j]
+        if b == -2:
+            continue  # dropped; the last placed note stays j
+        path[i] = j
+        if b == -1:
+            break  # earlier syllables were all dropped
+        j = int(b)
+    return path
+
+
+def split_notes(notes: list[dict[str, Any]], syl: list[tuple[float, float]], *, min_s: float, min_conf: float,
+                rejected: list[float], confirmed: list[float], tol: float
+                ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split notes that carry several syllables. `syl`: (start, aligner
+    confidence) per syllable. A note is cut at the start of every further
+    syllable inside it that the aligner is confident about, keeping pieces of
+    at least `min_s`; `rejected` / `confirmed` cut times (user corrections)
+    override. Returns the new notes and one record per cut."""
+    times = sorted(syl)
+    out: list[dict[str, Any]] = []
+    cuts: list[dict[str, Any]] = []
+    for idx, n in enumerate(notes):
+        a, b = n["start"], n["start"] + n["dur"]
+        inside = [(t, c) for t, c in times if a - tol <= t < b]
+        want = [(t, c, "auto") for t, c in inside[1:] if c >= min_conf]
+        want += [(t, None, "user") for t in confirmed if a + min_s <= t <= b - min_s]
+        points: list[tuple[float, float | None, str]] = []
+        for t, c, src in sorted(want):
+            if src == "auto" and match_time(sorted(confirmed), t, tol) is not None:
+                continue  # the user's own cut time is used instead
+            if src == "auto" and match_time(sorted(rejected), t, tol) is not None:
+                continue
+            last = points[-1][0] if points else a
+            if t - last >= min_s and b - t >= min_s:
+                points.append((t, c, src))
+        if not points:
+            out.append(n)
+            continue
+        edges = [a] + [t for t, _, _ in points] + [b]
+        for k, (s, e) in enumerate(zip(edges, edges[1:])):
+            piece = dict(n, start=round(s, 4), dur=round(e - s, 4))
+            if k:
+                piece["merges"] = []
+                piece["split"] = {"source": points[k - 1][2], "conf": points[k - 1][1], "of": idx + 1}
+            out.append(piece)
+        cuts += [{"time": round(t, 3), "of": idx + 1, "conf": c, "source": src} for t, c, src in points]
+    return out, cuts
+
+
+def crowded_cuts(notes: list[dict[str, Any]], left: list[tuple[float, float]], *, min_s: float,
+                 rejected: list[float], tol: float) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Cut notes for syllables the assignment left out where several crowd one
+    note. `left`: (start, support) of those syllables. The note holding a
+    syllable's start (or starting just after it) is cut there, or at its middle
+    if that would leave a piece shorter than `min_s`; at most one cut per note."""
+    out = [dict(n) for n in notes]
+    cuts: list[dict[str, Any]] = []
+    done: set[int] = set()
+    for t, c in sorted(left):
+        k = next((i for i, n in enumerate(out) if n["start"] - tol <= t < n["start"] + n["dur"]), None)
+        if k is None or k in done:
+            continue
+        n = out[k]
+        a, b = n["start"], n["start"] + n["dur"]
+        cut = t if t - a >= min_s and b - t >= min_s else (a + b) / 2 if b - a >= 2 * min_s else None
+        if cut is None or match_time(sorted(rejected), cut, tol) is not None:
+            continue
+        first = dict(n, dur=round(cut - a, 4))
+        second = dict(n, start=round(cut, 4), dur=round(b - cut, 4), merges=[],
+                      split={"source": "auto", "conf": c, "of": n.get("split", {}).get("of"), "crowded": True})
+        out[k:k + 1] = [first, second]
+        done.update({k, k + 1})  # later syllables lie in later notes: no index shift needed
+        cuts.append({"time": round(cut, 3), "of": None, "conf": c, "source": "auto"})
+    return out, cuts
+
+
 def safe_merge(auto: list[str], manual: dict[int, str], want_manual: set[int]) -> tuple[list[str], int]:
     """Per-note lyrics: manual where wanted, switching sources only where both
     streams have consumed the same number of syllables. Returns (lyrics, late)."""
@@ -107,9 +249,6 @@ def _run(ctx: StageContext) -> StageResult:
     ali = json.loads(ctx.inputs["alignment"].read_text(encoding="utf-8"))
     tempo = json.loads(ctx.inputs["tempo"].read_text(encoding="utf-8"))
     boundaries = json.loads(ctx.inputs["boundaries"].read_text(encoding="utf-8"))
-    onsets = np.array([n["start"] for n in notes])
-    ends = onsets + np.array([n["dur"] for n in notes])
-    on_list = onsets.tolist()
     used: set[int] = set()
     conflicts: list[dict[str, Any]] = []
 
@@ -133,23 +272,75 @@ def _run(ctx: StageContext) -> StageResult:
             else:
                 when = t["t0"] + s * (t["t1"] - t["t0"]) / t["syll"]
             syl.append((k, s == 0, when))
+    # How well the aligner supports each syllable: its own confidence, or its
+    # line's mean if higher (a weak syllable between well-aligned neighbours
+    # still sits about right; a line the lead does not sing is weak throughout).
+    line_mean = {ln["line"]: float(ln.get("conf_mean", ln.get("conf") or 0.0)) for ln in ali["lines"]}
+    syl_conf = np.array([max(float(tokens[k].get("conf", 1.0)), line_mean.get(tokens[k]["line"], 0.0))
+                         for k, _, _ in syl])
 
-    forbid = np.zeros(len(notes), bool)
-    require = np.zeros(len(notes), bool)
+    # Several syllables on one transcribed note: split it (see the module notes).
+    split_fix = [c for c in ctx.corrections if c["type"] == "split"]
+    japanese = any(t.get("lang") == "ja" for t in tokens)
+    mode = str(p["split"])  # auto | on | off
+    auto_split = mode == "on" or mode == "auto" and (japanese or len(syl) > len(notes))
+    cuts: list[dict[str, Any]] = []
+    if auto_split or split_fix:
+        notes, cuts = split_notes(
+            notes, [(w, float(c)) for (_, _, w), c in zip(syl, syl_conf)],
+            min_s=float(p["split_min_s"]), min_conf=float(p["split_conf"]) if auto_split else float("inf"),
+            rejected=[float(c["at"]) for c in split_fix if c["action"] == "reject"],
+            confirmed=[float(c["at"]) for c in split_fix if c["action"] == "confirm"], tol=tol)
+    rejected = [float(c["at"]) for c in split_fix if c["action"] == "reject"]
+
+    def place(notes: list[dict[str, Any]]):
+        onsets = np.array([n["start"] for n in notes])
+        ends = onsets + np.array([n["dur"] for n in notes])
+        forbid = np.zeros(len(notes), bool)
+        require = np.zeros(len(notes), bool)
+        for c in (c for c in ctx.corrections if c["type"] == "kind"):
+            j = match_time(onsets.tolist(), float(c["at"]), tol)
+            if j is not None:
+                (forbid if c["kind"] == SUSTAIN else require)[j] = True
+        # A syllable may stay without a note (see the module notes). On the
+        # Cantonese validation song this changes nothing: no syllable is left out.
+        drop = float(p["drop_cost"]) + float(p["drop_conf_cost"]) * syl_conf
+        path = dp_assign_dropping(np.array([s[2] for s in syl]), onsets, ends, drop, gap_pen=float(p["gap_pen"]),
+                                  lead_pen=float(p["lead_pen"]), cap=float(p["cap"]), rest_gap=float(p["rest_gap"]),
+                                  forbid=forbid, require=require)
+        return onsets, ends, forbid, require, path
+
+    onsets, ends, forbid, require, path = place(notes)
+    # Well-supported syllables left without a note where several crowd one:
+    # cut the note that holds them, and assign again.
+    for _ in range(3 if auto_split else 0):
+        left = [(syl[i][2], float(syl_conf[i])) for i, j in enumerate(path) if j < 0 and syl_conf[i] >= float(p["split_conf"])]
+        notes, more = crowded_cuts(notes, left, min_s=float(p["split_min_s"]), rejected=rejected, tol=tol)
+        if not more:
+            break
+        cuts = sorted(cuts + more, key=lambda c: c["time"])
+        onsets, ends, forbid, require, path = place(notes)
+    on_list = onsets.tolist()
+    for c in split_fix:
+        near = any(abs(x["time"] - float(c["at"])) <= tol for x in cuts)
+        inside = any(n["start"] - tol <= float(c["at"]) < n["start"] + n["dur"] for n in notes)
+        if (c["action"] == "confirm" and near) or (c["action"] == "reject" and inside):
+            used.add(c["_id"])
     for c in (c for c in ctx.corrections if c["type"] == "kind"):
-        j = match_time(on_list, float(c["at"]), tol)
-        if j is None:
-            continue
-        used.add(c["_id"])
-        (forbid if c["kind"] == SUSTAIN else require)[j] = True
+        if match_time(on_list, float(c["at"]), tol) is not None:
+            used.add(c["_id"])
 
-    path = dp_assign(np.array([s[2] for s in syl]), onsets, ends, gap_pen=float(p["gap_pen"]),
-                     lead_pen=float(p["lead_pen"]), cap=float(p["cap"]), rest_gap=float(p["rest_gap"]),
-                     forbid=forbid, require=require)
-
+    # A token is placed if any of its syllables got a note; its first placed
+    # syllable carries the word, later ones `+`.
     auto = ["-"] * len(notes)
-    for (k, first, _), j in zip(syl, path):
-        auto[j] = tokens[k]["text"] if first else "+"
+    placed = [False] * len(tokens)
+    for (k, _, _), j in zip(syl, path):
+        if j < 0:
+            continue
+        auto[j] = "+" if placed[k] else tokens[k]["text"]
+        placed[k] = True
+    unplaced = [{"line": t["line"], "time": round(float(t["t0"]), 3), "syllables": int(t["syll"]),
+                 "conf": t.get("conf")} for t, ok in zip(tokens, placed) if not ok]
 
     # Manual line versions.
     manual: dict[int, str] = {}
@@ -171,12 +362,15 @@ def _run(ctx: StageContext) -> StageResult:
         locked_lines.add(int(c["line"]))
     final, late = safe_merge(auto, manual, want_manual)
 
+    # Tokens in the score: the placed ones, and every token of a manual line.
+    seq = [k for k, t in enumerate(tokens) if placed[k] or t["line"] in locked_lines]
+    unplaced = [u for u in unplaced if u["line"] not in locked_lines]
     words = [x for x in final if x not in ("-", "+")]
-    sequence_ok = words == [t["text"] for t in tokens]
+    sequence_ok = words == [tokens[k]["text"] for k in seq]
     if not sequence_ok:
         raise RuntimeError("分配后的字序和歌词文件不一致")
 
-    # With the sequence verified, the w-th word note carries token w. A `+`
+    # With the sequence verified, the w-th word note carries token seq[w]. A `+`
     # belongs to the word before it, a `-` sustains it; leading notes go to
     # the first token.
     token_of_note: list[int] = []
@@ -184,7 +378,7 @@ def _run(ctx: StageContext) -> StageResult:
     for lyric in final:
         if lyric not in ("-", "+"):
             w += 1
-        token_of_note.append(max(w, 0))
+        token_of_note.append(seq[max(w, 0)])
     line_of_note = [tokens[k]["line"] for k in token_of_note]
 
     # Pitch / tempo overrides.
@@ -217,6 +411,8 @@ def _run(ctx: StageContext) -> StageResult:
             flags.append("sustain_after_rest")
         if line_info.get(line_of_note[j], {}).get("conf", 1.0) < threshold and line_of_note[j] not in locked_lines:
             flags.append("low_conf_line")
+        if n.get("split"):
+            flags.append("auto_split" if n["split"]["source"] == "auto" else "user_split")
         bi = match_time(b_times, n["start"], 0.002)
         b = boundaries[bi] if bi is not None else None
         raw_pitch = float(pitch_fix.get(j, n["pitch"]))
@@ -238,6 +434,13 @@ def _run(ctx: StageContext) -> StageResult:
             "merged_from": n["merged_from"],
             "flags": flags,
         })
+    split_log = []
+    for c in cuts:
+        j = match_time(on_list, c["time"], 0.002)
+        split_log.append({**c, "note": j + 1 if j is not None else None,
+                          "line": line_of_note[j] if j is not None else None})
+    for u in unplaced:
+        u["unplaced"] = True
 
     lines = []
     for ln in ali["lines"]:
@@ -250,6 +453,7 @@ def _run(ctx: StageContext) -> StageResult:
             "lang": sorted({t["lang"] for t in ln_tokens}),
             "version": "manual" if ln["line"] in locked_lines else "auto",
             "syllables": sum(t["syll"] for t in ln_tokens),
+            "unplaced": sum(u["syllables"] for u in unplaced if u["line"] == ln["line"]),
             "from_dictation": sum(1 for t in ln_tokens if t.get("source") == "dictation"),
             "notes": len(mine),
             "sustain": sum(1 for s in mine if s["kind"] == SUSTAIN),
@@ -267,13 +471,15 @@ def _run(ctx: StageContext) -> StageResult:
         "lines": lines,
         "notes": score_notes,
         "checks": {"sequence_matches_lyrics": sequence_ok, "late_switches": late},
+        "splits": split_log,  # notes cut where several syllables shared one (times, no text)
+        "unplaced": unplaced,  # tokens left without a note (times, no text)
     }
     out = ctx.out_dir / "score.json"
     out.write_text(json.dumps(score, ensure_ascii=False, indent=1), encoding="utf-8")
     (ctx.out_dir / "corrections_used.json").write_text(json.dumps(sorted(used)), encoding="utf-8")
     (ctx.out_dir / "conflicts.json").write_text(json.dumps(conflicts, ensure_ascii=False), encoding="utf-8")
 
-    dev = np.array([abs(s[2] - onsets[j]) for s, j in zip(syl, path)])
+    dev = np.array([abs(s[2] - onsets[j]) for s, j in zip(syl, path) if j >= 0])
     return StageResult(
         outputs={"score": out},
         metrics={
@@ -284,6 +490,8 @@ def _run(ctx: StageContext) -> StageResult:
             "onset_dev_median_ms": round(float(np.median(dev)) * 1000) if len(dev) else None,
             "onset_dev_p90_ms": round(float(np.percentile(dev, 90)) * 1000) if len(dev) else None,
             "sequence_ok": sequence_ok,
+            "splits": len(cuts),
+            "unplaced_syllables": sum(u["syllables"] for u in unplaced),
         },
     )
 
@@ -292,11 +500,13 @@ STAGE = Stage(
     name="assign",
     title="分配字到音符",
     index=9,
-    version="4",
+    version="5",
     inputs=("merged_notes", "boundaries", "alignment", "tempo"),
     outputs=("score",),
     defaults={"gap_pen": 0.3, "lead_pen": 2.0, "cap": 1.5, "rest_gap": 0.25, "tolerance": 0.03,
-              "line_conf_threshold": 0.15},
-    corrections=("kind", "line_version", "pitch", "tempo"),
+              "line_conf_threshold": 0.15,
+              "split": "auto", "split_min_s": 0.07, "split_conf": 0.1,
+              "drop_cost": 1.5, "drop_conf_cost": 3.0},
+    corrections=("kind", "line_version", "pitch", "tempo", "split"),
     run=_run,
 )

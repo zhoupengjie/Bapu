@@ -9,7 +9,9 @@ import { Icon } from "../icons";
 type Picked = { path?: string; file?: File; name: string };
 type Kind = "audio" | "lyrics";
 
-const LANGS = [["yue", "粤语"], ["zh", "普通话"], ["en", "英语"]] as const;
+const LANGS = [["yue", "粤语"], ["zh", "普通话"], ["ja", "日语"], ["en", "英语"]] as const;
+// kanji look the same in Chinese and Japanese: Japanese goes with English only
+const CHINESE = ["yue", "zh"];
 const DEFAULT_LANGS = ["yue", "en"];
 const ACCEPT: Record<Kind, string> = {
   audio: "audio/*,video/*,.wav,.flac,.mp3,.m4a,.aac,.ogg,.opus,.mp4,.mov,.mkv,.webm",
@@ -202,7 +204,9 @@ export default function ImportPage() {
   const toggle = (id: string) => {
     const on = langs.includes(id);
     if (on && langs.length === 1) return; // at least one stays
-    setLangs(on ? langs.filter((x) => x !== id) : [...langs, id]);
+    if (on) return setLangs(langs.filter((x) => x !== id));
+    const others = id === "ja" ? langs.filter((x) => !CHINESE.includes(x)) : CHINESE.includes(id) ? langs.filter((x) => x !== "ja") : langs;
+    setLangs([...others, id]);
   };
 
   const hasLyrics = !!lyrics || !!job?.has_lyrics;
@@ -266,7 +270,7 @@ export default function ImportPage() {
       </div>
 
       <div className="sec">
-        <h2 id="h-langs">{t("唱了哪些语言")}</h2>
+        <h2 id="h-langs">{t("歌曲语言")}</h2>
         <div className="choices" role="group" aria-labelledby="h-langs">
           {LANGS.map(([id, label]) => {
             const on = langs.includes(id);

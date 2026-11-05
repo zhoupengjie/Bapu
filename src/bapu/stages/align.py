@@ -1,8 +1,10 @@
 """07 align: CTC forced alignment of the lyric letters to the dry lead.
 
 Backend `mms`: torchaudio MMS_FA (16 kHz, 20 ms frames). Letter posteriors are
-computed in 20 s chunks with 2 s of context on each side, concatenated, and the
-whole song is aligned in one Viterbi pass. Each token gets a start, an end and
+computed in 10 s chunks with 2 s of context on each side, concatenated, and the
+whole song is aligned in one Viterbi pass. (With 20 s chunks MMS sometimes
+hears only blank over a whole sung passage that it reads well in a shorter
+window: on a Japanese song two lines had near-zero confidence; pipeline notes.) Each token gets a start, an end and
 a confidence (mean posterior of its letters); a line's confidence is its
 lowest token confidence.
 
@@ -219,7 +221,7 @@ STAGE = Stage(
     version="7",
     inputs=("lead_dry", "lyrics_lines"),
     outputs=("alignment",),
-    defaults={"model": "mms-fa", "chunk_s": 20.0, "context_s": 2.0, "line_conf_threshold": 0.15,
+    defaults={"model": "mms-fa", "chunk_s": 10.0, "context_s": 2.0, "line_conf_threshold": 0.15,
               "keep_conf": 0.15, "alt_margin": 0.15, "alt_min": 0.3},
     model_params={"model": "align"},
     run=_run,

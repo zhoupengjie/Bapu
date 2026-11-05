@@ -109,7 +109,8 @@ def main() -> None:
 @click.option("--accept-licenses", is_flag=True, help="缺模型时不逐个询问，直接接受许可证并下载")
 @click.option("--lyrics", type=click.Path(exists=True, dir_okay=False, path_type=Path),
               help="参考歌词（.ass / .lrc / .txt），用来校正听写的用字；不给时沿用上次的")
-@click.option("--lang", help="歌曲里的语言，可多选，逗号分隔：yue（粤语）、zh（普通话）、en（英语）；默认 yue,en")
+@click.option("--lang", help="歌曲里的语言，可多选，逗号分隔：yue（粤语）、zh（普通话）、en（英语）、ja（日语）；"
+                             "日语只能单独选或和英语一起选；默认 yue,en")
 @click.option("--notes", help="用这个 SV 工程（.svp）或 MIDI 的音符代替转谱，比如 SV2 从主唱干声提取的；"
                               "不给时沿用上次的，写 none 改回自动转谱")
 @click.option("--notes-track", type=int, default=None, help="--notes 的工程里有几条音轨都有音符时，用第几条（从 1 数）")

@@ -172,3 +172,112 @@ def test_review_flags_possible_missing_words(tmp_path, stage_inputs):
     review = json.loads((tmp_path / "review.json").read_text(encoding="utf-8"))
     flagged = {ln["line"]: ln["maybe_missing"] for ln in review["lines"] if ln["maybe_missing"]}
     assert flagged == {1: {"notes": [4, 5], "time": 2.5}}
+
+
+# --- several syllables on one note; more syllables than notes (made-up morae) ---
+
+def test_split_notes_cuts_at_confident_onsets():
+    notes = [{"start": 0.0, "dur": 1.0, "pitch": 60.0, "merged_from": [1], "merges": [{"source": "auto"}]},
+             {"start": 1.0, "dur": 0.5, "pitch": 62.0, "merged_from": [2], "merges": []}]
+    syl = [(0.0, 0.9), (0.4, 0.8), (0.95, 0.9), (1.0, 0.7), (1.2, 0.05)]  # 0.95: too close to the end
+    out, cuts = assign.split_notes(notes, syl, min_s=0.07, min_conf=0.1, rejected=[], confirmed=[], tol=0.03)
+    assert [(n["start"], n["dur"], n["pitch"]) for n in out] == [(0.0, 0.4, 60.0), (0.4, 0.6, 60.0), (1.0, 0.5, 62.0)]
+    assert out[0]["merges"] and not out[1]["merges"] and out[1]["split"]["of"] == 1
+    assert [(c["time"], c["source"]) for c in cuts] == [(0.4, "auto")]  # 1.2 is not confident enough
+    out, cuts = assign.split_notes(notes, syl, min_s=0.07, min_conf=0.1, rejected=[0.41], confirmed=[1.25], tol=0.03)
+    assert [n["start"] for n in out] == [0.0, 1.0, 1.25] and [c["source"] for c in cuts] == ["user"]
+
+
+def test_dp_dropping_leaves_the_least_supported_syllables():
+    onsets = np.array([0.0, 1.0, 2.0])
+    ends = onsets + 0.5
+    kw = dict(gap_pen=0.3, lead_pen=2.0, cap=1.5, rest_gap=0.25)
+    syl = np.array([0.0, 0.5, 1.0, 2.0])
+    drop = 1.5 + 3.0 * np.array([0.9, 0.0, 0.8, 0.7])  # the second syllable: the aligner never found it
+    assert assign.dp_assign_dropping(syl, onsets, ends, drop, **kw) == [0, -1, 1, 2]
+    # Enough notes and dear drops: the same as without dropping.
+    syl = np.array([0.02, 0.98, 2.01])
+    assert assign.dp_assign_dropping(syl, onsets, ends, np.full(3, 9.0), **kw) == assign.dp_assign(syl, onsets, ends, **kw)
+
+
+def japanese_inputs(tmp_path: Path):
+    """Morae (made up) where two share the first note, and a line the lead does not sing."""
+    notes = [{"start": t, "dur": d, "pitch": 60.0, "merged_from": [i + 1], "merges": []}
+             for i, (t, d) in enumerate([(0.0, 0.8), (1.0, 0.4), (1.5, 0.4)])]
+    toks = [("か", 1, 0.0, 0.3, 0.8), ("な", 1, 0.4, 0.7, 0.7), ("た", 1, 1.0, 1.3, 0.9), ("ま", 1, 1.5, 1.8, 0.6),
+            ("zorbq", 2, 1.95, 1.97, 0.0), ("quexil", 2, 1.97, 1.99, 0.01)]
+    ali = {"lang": "ja", "mode": "fused",
+           "tokens": [{"text": w, "lang": "en" if w.isascii() else "ja", "syll": 1, "line": li, "t0": a, "t1": b,
+                       "conf": c, "source": "both", "flags": []} for w, li, a, b, c in toks],
+           "lines": [{"line": 1, "start": None, "end": None, "t0": 0.0, "t1": 1.8, "conf": 0.6},
+                     {"line": 2, "start": None, "end": None, "t0": 1.95, "t1": 1.99, "conf": 0.0}],
+           "decisions": []}
+    tempo = {"bpm": 120.0, "first_beat": 0.0, "beat_phase_s": 0.0, "confidence": "high", "time_signature": "4/4"}
+    d = tmp_path / "in"
+    d.mkdir()
+    return {"merged_notes": write(d / "notes.json", {"notes": notes}), "boundaries": write(d / "b.json", []),
+            "alignment": write(d / "alignment.json", ali), "tempo": write(d / "tempo.json", tempo)}
+
+
+def test_assign_splits_and_leaves_unsung_syllables(tmp_path):
+    inputs = japanese_inputs(tmp_path)
+    res, score = run_assign(tmp_path, inputs)
+    assert [n["lyric"] for n in score["notes"]] == ["か", "な", "た", "ま"]
+    assert [round(n["start"], 2) for n in score["notes"]] == [0.0, 0.4, 1.0, 1.5]
+    assert "auto_split" in score["notes"][1]["flags"]
+    assert res.metrics["splits"] == 1 and res.metrics["unplaced_syllables"] == 2 and res.metrics["sequence_ok"]
+    assert [(u["line"], u["syllables"]) for u in score["unplaced"]] == [(2, 1), (2, 1)]
+    assert [ln["unplaced"] for ln in score["lines"]] == [0, 2]
+    # The review lists both, with times and no text.
+    wd = WorkDir(tmp_path)
+    wd.record("assign", StageRecord(key="k", dir="08_assign", outputs={"score": "08_assign/score.json"},
+                                    params=dict(assign.STAGE.defaults)))
+    (tmp_path / "08_assign" / "corrections_used.json").write_text("[]", encoding="utf-8")
+    written = report.finalize(wd)
+    review = json.loads((tmp_path / "review.json").read_text(encoding="utf-8"))
+    md = written["review_md"].read_text(encoding="utf-8")
+    assert review["summary"]["auto_splits"] == 1 and review["summary"]["unplaced_syllables"] == 2
+    assert [(x["note"], x["line"]) for x in review["splits"]] == [(2, 1)]
+    assert "拆开的音符" in md and "没分到音符的音节" in md
+    for word in ("か", "な", "た", "ま", "zorbq", "quexil"):
+        assert word not in md and word not in json.dumps(review, ensure_ascii=False)
+
+
+def test_assign_split_corrections(tmp_path):
+    inputs = japanese_inputs(tmp_path)
+    reject = {"type": "split", "at": 0.4, "action": "reject", "_id": 1}
+    res, score = run_assign(tmp_path, inputs, [reject])
+    assert res.metrics["splits"] == 0 and len(score["notes"]) == 3
+    assert json.loads((tmp_path / "08_assign" / "corrections_used.json").read_text()) == [1]
+    # Not Japanese and enough notes: no automatic split, but a confirmed one is made.
+    tokens = json.loads(inputs["alignment"].read_text(encoding="utf-8"))
+    for t in tokens["tokens"]:
+        t["lang"] = "yue"
+    tokens["tokens"] = tokens["tokens"][:3]
+    write(inputs["alignment"], tokens)
+    res, score = run_assign(tmp_path, inputs)
+    assert res.metrics["splits"] == 0 and len(score["notes"]) == 3
+    res, score = run_assign(tmp_path, inputs, [{"type": "split", "at": 0.4, "action": "confirm", "_id": 2}])
+    assert res.metrics["splits"] == 1 and "user_split" in score["notes"][1]["flags"]
+
+
+def test_corrections_accept_split(tmp_path):
+    from bapu import corrections
+
+    p = tmp_path / "c.yaml"
+    p.write_text("- {type: split, at: 1.5, action: reject}\n", encoding="utf-8")
+    assert corrections.load(p)[0]["action"] == "reject"
+    p.write_text("- {type: split, at: 1.5, action: maybe}\n", encoding="utf-8")
+    with pytest.raises(corrections.CorrectionsError):
+        corrections.load(p)
+
+
+def test_crowded_cuts():
+    notes = [{"start": 0.0, "dur": 0.13, "pitch": 60.0, "merged_from": [1], "merges": []},
+             {"start": 0.13, "dur": 0.5, "pitch": 62.0, "merged_from": [2], "merges": []}]
+    # A left-out syllable 30 ms into a short note: cut at the note's middle; one in the long note: cut at it.
+    out, cuts = assign.crowded_cuts(notes, [(0.03, 0.5), (0.4, 0.5)], min_s=0.06, rejected=[], tol=0.03)
+    assert [(round(n["start"], 3), round(n["dur"], 3)) for n in out] == [(0.0, 0.065), (0.065, 0.065), (0.13, 0.27), (0.4, 0.23)]
+    assert all(n.get("split", {}).get("crowded") for n in (out[1], out[3])) and len(cuts) == 2
+    out, cuts = assign.crowded_cuts(notes, [(0.4, 0.5)], min_s=0.06, rejected=[0.4], tol=0.03)
+    assert len(out) == 2 and not cuts  # the user rejected that cut

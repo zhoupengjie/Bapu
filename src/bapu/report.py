@@ -59,7 +59,7 @@ def build_review(wd: WorkDir, score: dict[str, Any]) -> dict[str, Any]:
     by_orig: dict[int, dict[str, Any]] = {}
     for n in notes:
         for o in n["merged_from"]:
-            by_orig[o] = n
+            by_orig.setdefault(o, n)  # a note cut in pieces: its first piece
 
     merges = []
     for b in _read(wd, "splits", "boundaries.json") or []:
@@ -98,13 +98,29 @@ def build_review(wd: WorkDir, score: dict[str, Any]) -> dict[str, Any]:
         run = [n] if n["kind"] == "sustain" else []
 
     threshold = (wd.get("assign").params or {}).get("line_conf_threshold", 0.15)
+    # Japanese songs: how each line's Latin words were read (romaji or English; counts only).
+    latin = {ln["line"]: ln["latin"] for ln in (_read(wd, "lyrics", "lyrics.json") or {}).get("lines", [])
+             if ln.get("latin")}
     lines = []
     for ln in score["lines"]:
         low = ln["conf"] is not None and ln["conf"] < threshold and ln["version"] == "auto"
         short = ln["notes"] < ln["syllables"]
         miss = missing.get(ln["line"])
-        lines.append({**ln, "low_conf": low, "fewer_notes": short, "maybe_missing": miss,
-                      "attention": low or short or bool(miss)})
+        unplaced = ln.get("unplaced", 0)
+        rl = latin.get(ln["line"])
+        mixed = None
+        if rl and not rl["forced"] and 0 < rl["romaji_votes"] < rl["votes"]:
+            mixed = {"read_as": rl["read_as"], "romaji_votes": rl["romaji_votes"], "votes": rl["votes"]}
+        lines.append({**ln, "low_conf": low, "fewer_notes": short, "maybe_missing": miss, "romaji_mixed": mixed,
+                      "unplaced": unplaced, "attention": low or short or bool(miss) or bool(mixed) or bool(unplaced)})
+
+    # Notes the assign stage cut where several syllables shared one note, and
+    # syllables that got no note at all (times, note indices, lines only).
+    splits = [{"time": c["time"], "note": c["note"], "line": c["line"], "conf": c["conf"],
+               "status": "你确认的" if c["source"] == "user" else "待确认", "attention": c["source"] != "user"}
+              for c in score.get("splits", [])]
+    unplaced_tokens = [{"time": u["time"], "line": u["line"], "syllables": u["syllables"], "conf": u.get("conf")}
+                       for u in score.get("unplaced", [])]
 
     # Corrections: which entries no longer apply, which conflict.
     entries = corr.load(wd.corrections_path) if wd.corrections_path.exists() else []
@@ -136,7 +152,7 @@ def build_review(wd: WorkDir, score: dict[str, Any]) -> dict[str, Any]:
     for e in _read(wd, "lyrics", "fusion.json") or []:
         if e["type"] in ("differs", "extra_ignored"):
             why = {"english": "有英文，听写不可靠", "length": "字数不同", "too_long": "听写多出的字太多",
-                   "locked": "这一句你修正过"}.get(e.get("reason", ""), "")
+                   "locked": "这一句你修正过", "long_vowel": "听写多出的是长音，按延续处理"}.get(e.get("reason", ""), "")
             dictation.append({"kind": e["type"], "line": e["line"], "time": e.get("time"), "conf": None,
                               "status": f"听写和参考不一致，保留参考（{why}）", "attention": e.get("reason") == "length"})
     dictation.sort(key=lambda x: (x["line"], x["time"] or 0))
@@ -147,6 +163,7 @@ def build_review(wd: WorkDir, score: dict[str, Any]) -> dict[str, Any]:
             ln["dictation_only"] = True
 
     attention = (sum(m["attention"] for m in merges) + sum(s["attention"] for s in sustains)
+                 + sum(x["attention"] for x in splits)
                  + sum(ln["attention"] for ln in lines) + len(stale) + len(conflict_ids)
                  + sum(d["attention"] for d in dictation))
     return {
@@ -155,16 +172,23 @@ def build_review(wd: WorkDir, score: dict[str, Any]) -> dict[str, Any]:
             "notes": len(notes), "lines": len(lines), "attention": attention,
             "auto_merges": sum(m["attention"] for m in merges), "sustain": len(sustains),
             "low_conf_lines": sum(ln["low_conf"] for ln in lines),
-            "maybe_missing_lines": sum(bool(ln["maybe_missing"]) for ln in lines), "manual_lines": sum(ln["version"] == "manual" for ln in lines),
+            "maybe_missing_lines": sum(bool(ln["maybe_missing"]) for ln in lines),
+            "romaji_mixed_lines": sum(bool(ln["romaji_mixed"]) for ln in lines), "manual_lines": sum(ln["version"] == "manual" for ln in lines),
             "stale_corrections": len(stale), "conflicting_corrections": len(conflict_ids),
             "tempo_bpm": score["tempo"]["bpm"], "tempo_source": score["tempo"]["source"],
             "sequence_matches_lyrics": score["checks"]["sequence_matches_lyrics"],
             "corrections": len(entries),
             "lyrics_mode": mode,
             "dictation_changes": sum(d["attention"] for d in dictation),
+            "lang": score.get("lang"),
+            "auto_splits": sum(x["attention"] for x in splits),
+            "unplaced_syllables": sum(u["syllables"] for u in unplaced_tokens),
+            "unplaced_lines": sum(bool(ln["unplaced"]) for ln in lines),
         },
         "dictation": dictation,
         "merges": merges,
+        "splits": splits,
+        "unplaced": unplaced_tokens,
         "sustains": sustains,
         "lines": lines,
         "stale_corrections": stale,
@@ -182,12 +206,19 @@ def render_md(r: dict[str, Any]) -> str:
         f"- 音符 {s['notes']} 个，句子 {s['lines']} 句；拍速 {s['tempo_bpm']:g} BPM（{'你设定的' if s['tempo_source'] == 'user' else '自动估计'}）",
         f"- 分配后的字序和歌词一致：{'是' if s['sequence_matches_lyrics'] else '否'}",
         f"- **需要你确认 {s['attention']} 条**：自动合并 {s['auto_merges']}、低置信度句子 {s['low_conf_lines']}、"
-        f"可能漏字的句子 {s['maybe_missing_lines']}、失效修正 {s['stale_corrections']}、冲突修正 {s['conflicting_corrections']}，以及下面标 ⚠ 的 `-`",
+        f"可能漏字的句子 {s['maybe_missing_lines']}、失效修正 {s['stale_corrections']}、冲突修正 {s['conflicting_corrections']}"
+        + (f"、拆开的音符 {s['auto_splits']}" if s.get("auto_splits") else "")
+        + (f"、有音节没分到音符的句子 {s['unplaced_lines']}" if s.get("unplaced_lines") else "")
+        + "，以及下面标 ⚠ 的 `-`",
         f"- 修正文件里有 {s['corrections']} 条；用人工版本的句子 {s['manual_lines']} 句",
         "- 歌词来源：" + ("只有听写（没有参考歌词），每句都要确认" if s["lyrics_mode"] == "dictation_only"
                        else f"听写 + 参考歌词；听写改动了 {s['dictation_changes']} 处"),
         "",
     ]
+    if s.get("lang") == "ja":
+        out[-1:-1] = ["- 日语按音拍计数：下面的“音节”是音拍数（一个假名算一拍，带小写假名的拗音算一拍，"
+                      "促音并入前一拍，长音符不单独算）",
+                      f"- 罗马字还是英语不确定的句子 {s.get('romaji_mixed_lines', 0)} 句（列在“需要试听的句子”里）"]
     if r["dictation"]:
         out += ["## 听写和参考歌词", "", "| 时间 | 句 | 置信度 | 结果 |", "|---|---|---|---|"]
         for d in r["dictation"]:
@@ -202,6 +233,25 @@ def render_md(r: dict[str, Any]) -> str:
         for c in r["conflicting_corrections"]:
             out.append(f"| 第 {c['id']} 条 | line_version | L{c['line']:02d} | 冲突：{c['reason']} |")
         out.append("")
+    if r.get("splits"):
+        out += ["## 拆开的音符", "",
+                "一个转谱音符上对齐出了几个音节（日语常把几拍唱在同一个音高上），在后面音节的开头处切开，两段音高相同。"
+                "不对的话在 SV 里把两段合回去，再运行 `bapu corrections from-svp`（或写 `split` 修正：reject）。", "",
+                "| 时间（切点） | 音符 | 句 | 对齐置信度 | 状态 |", "|---|---|---|---|---|"]
+        for x in r["splits"]:
+            conf = f"{x['conf']:.2f}" if x["conf"] is not None else "—"
+            line = f"L{x['line']:02d}" if x["line"] is not None else "—"
+            out.append(f"| {mmss(x['time'])} | {x['note'] or '—'} | {line} | {conf} | {'⚠ ' if x['attention'] else ''}{x['status']} |")
+        out.append("")
+    if r.get("unplaced"):
+        out += ["## 没分到音符的音节", "",
+                "音节比音符多，这些字没有放到任何音符上（对齐器最不确定的那些；常见原因：这一句是和声 / 伴唱，主唱轨里没有）。"
+                "需要的话在 SV 里补音符，再运行 `bapu corrections from-svp`。", "",
+                "| 时间（对齐位置） | 句 | 音节数 | 对齐置信度 |", "|---|---|---|---|"]
+        for u in r["unplaced"]:
+            conf = f"{u['conf']:.2f}" if u["conf"] is not None else "—"
+            out.append(f"| {mmss(u['time'])} | L{u['line']:02d} | {u['syllables']} | {conf} |")
+        out.append("")
     if r["merges"]:
         out += ["## 合并的音符", "", "| 时间 | 音符 | 句 | 起音分数 | 状态 |", "|---|---|---|---|---|"]
         for m in r["merges"]:
@@ -215,13 +265,20 @@ def render_md(r: dict[str, Any]) -> str:
             why = []
             if ln["low_conf"]:
                 why.append("对齐置信度低")
-            if ln["fewer_notes"]:
+            if ln.get("unplaced"):
+                why.append(f"{ln['unplaced']} 个音节没分到音符（主唱轨里可能没有，比如和声）")
+            elif ln["fewer_notes"]:
                 why.append("音符比音节少，借用了相邻句的音符")
             if ln.get("dictation_only"):
                 why.append("没有参考歌词，全部来自听写")
             if ln["maybe_missing"]:
                 m = ln["maybe_missing"]
                 why.append(f"可能字幕漏字：音符 {m['notes'][0]}–{m['notes'][-1]} 连续是 `-`，其中有明显的新起音")
+            if ln.get("romaji_mixed"):
+                m = ln["romaji_mixed"]
+                why.append(f"罗马字还是英语不确定：{m['votes']} 个可判断的词里 {m['romaji_votes']} 个能按罗马字读，"
+                           f"整句按{'日语（罗马字）' if m['read_as'] == 'ja' else '英语'}处理；"
+                           "可以用 line_lang 修正（ja / en）")
             out.append(f"| L{ln['line']:02d} | {mmss(ln['t0'])}–{mmss(ln['t1'])} | {ln['conf']:.2f} | "
                        f"{ln['syllables']} / {ln['notes']} | {'；'.join(why)} |")
         out.append("")

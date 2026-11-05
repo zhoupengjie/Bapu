@@ -2,7 +2,8 @@
 
 Cantonese: OpenCC `s2hk` to Hong Kong characters, then ToJyutping on the whole
 line (polyphones depend on context), tone digits removed. English: lower-case
-letters; syllables by vowel groups.
+letters; syllables by vowel groups. Japanese: tokens are already hiragana
+morae (bapu.lyrics.japanese); each gets its Hepburn letters.
 """
 
 from __future__ import annotations
@@ -10,9 +11,28 @@ from __future__ import annotations
 import re
 from functools import lru_cache
 
+from bapu.lyrics import japanese
+
 
 def is_latin(token: str) -> bool:
     return token[0].isascii()
+
+
+def is_kana(token: str) -> bool:
+    return japanese.has_kana(token)
+
+
+def token_lang(token: str, lang: str) -> str:
+    """`en` for a Latin word, `ja` for a kana token or any token of a Japanese
+    line, otherwise the line's Chinese language."""
+    if is_latin(token):
+        return "en"
+    return "ja" if lang == "ja" or is_kana(token) else lang
+
+
+def japanese_letters(morae: list[str]) -> list[str]:
+    """Hepburn letters (a-z) per mora; empty for a kanji without a reading."""
+    return [japanese.romaji(m) for m in morae]
 
 
 def english_syllables(word: str) -> int:
@@ -66,7 +86,10 @@ def pinyin_letters(chars: list[str]) -> list[str]:
 
 
 def cjk_letters(chars: list[str], lang: str) -> list[str]:
-    """Letters for the aligner: Jyutping for Cantonese (`yue`), pinyin for Mandarin (`zh`)."""
+    """Letters for the aligner: Jyutping for Cantonese (`yue`), pinyin for
+    Mandarin (`zh`), Hepburn for Japanese morae (`ja`)."""
+    if lang == "ja":
+        return japanese_letters(chars)
     return pinyin_letters(chars) if lang == "zh" else jyutping_letters(chars)
 
 

@@ -45,7 +45,7 @@ struct Backend {
     status: Mutex<(String, Option<String>)>,
     /// a project to open once the page asks (launch argument)
     pending: Mutex<Option<String>>,
-    /// the page's interface language (zh-CN / en), for the shell's own dialogs
+    /// the page's interface language (zh-CN / en / ja), for the shell's own dialogs
     lang: Mutex<String>,
 }
 
@@ -54,6 +54,8 @@ fn close_texts(lang: &str, installing: bool) -> (&'static str, &'static str, &'s
     match (lang, installing) {
         ("en", true) => ("The runtime is being installed. If you quit now, press Resume on the Setup page next time; what has been downloaded is kept. Quit?", "Quit", "Keep installing"),
         ("en", false) => ("A project is still being processed. Quitting stops it (finished steps are kept). Quit?", "Quit", "Keep processing"),
+        ("ja", true) => ("実行環境をインストール中です。いま終了した場合、次に Bapu を開いたときに環境ページで再開を押してください。ダウンロード済みの分はそのまま使われます。終了しますか？", "終了", "インストールを続ける"),
+        ("ja", false) => ("処理中のプロジェクトがあります。Bapu を閉じると中断されます（完了したステップは残ります）。終了しますか？", "終了", "処理を続ける"),
         (_, true) => ("运行环境正在安装。现在退出的话，下次打开 Bapu 时在环境页点继续，已经下载的部分不用重下。确定退出吗？", "退出", "继续安装"),
         (_, false) => ("还有工程在处理，关掉 Bapu 会中断它（已经算完的步骤会保留）。确定退出吗？", "退出", "继续处理"),
     }

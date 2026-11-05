@@ -36,11 +36,14 @@ def asr_language(langs: Any) -> str | None:
     """The speech model's language for the selected `langs` (None = let it detect).
 
     One Chinese language: force it (English words are still recognised). Both
-    Cantonese and Mandarin: detect per phrase. English only: English.
+    Cantonese and Mandarin: detect per phrase. Japanese (alone or with
+    English): Japanese. English only: English.
     """
     from bapu.stages.lyrics import check_langs
 
     langs = check_langs(langs)
+    if "ja" in langs:
+        return "Japanese"
     chinese = {x for x in langs if x in ("yue", "zh")}
     if chinese == {"yue"}:
         return "Cantonese"
@@ -90,11 +93,13 @@ def _run(ctx: StageContext) -> StageResult:
     out = ctx.out_dir / "dictation.json"
     out.write_text(json.dumps({"model": spec.id, "phrases": out_phrases}, ensure_ascii=False, indent=1),
                    encoding="utf-8")
-    toks = [t for p in out_phrases for t in tokenize(p["text"])]
+    langs = ctx.params["langs"]
+    per_phrase = [tokenize(p["text"], langs) for p in out_phrases]
+    toks = [t for ts in per_phrase for t in ts]
     return StageResult(outputs={"dictation": out}, metrics={
         "phrases": len(out_phrases), "tokens": len(toks),
         "latin_words": sum(1 for t in toks if t[0].isascii()),
-        "empty_phrases": sum(1 for p in out_phrases if not tokenize(p["text"])),
+        "empty_phrases": sum(1 for ts in per_phrase if not ts),
     })
 
 

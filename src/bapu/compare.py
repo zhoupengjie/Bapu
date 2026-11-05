@@ -72,12 +72,26 @@ def from_svp(wd: WorkDir, svp_path: Path, track: int = 1) -> tuple[list[dict[str
         elif split_in_sv and b["merge"]:
             entries.append({"type": "merge", "at": round(t, 3), "action": "reject"})
             stats["merge_reject"] += 1
+    # Notes the assign stage cut in two: kept apart in SV (confirm) or joined
+    # again (reject: the note stays whole on the next run).
+    kept_splits = []
+    for n in score["notes"]:
+        if "auto_split" not in n.get("flags", []):
+            continue
+        t = n["start"]
+        if match_time(sv_onsets, t, TOL) is not None:
+            kept_splits.append({"type": "split", "at": round(t, 3), "action": "confirm"})
+            stats["split_confirm"] = stats.get("split_confirm", 0) + 1
+        elif any(x.start < t - TOL and x.start + x.dur > t + TOL for x in sv_notes):
+            entries.append({"type": "split", "at": round(t, 3), "action": "reject"})
+            stats["split_reject"] = stats.get("split_reject", 0) + 1
 
     if entries:
-        # Merge decisions change which notes exist. Lyric differences are only
-        # meaningful once the notes line up, so they wait for the next pass.
+        # Merge and split decisions change which notes exist. Lyric differences
+        # are only meaningful once the notes line up, so they wait for the next pass.
         stats["needs_rerun"] = 1
-        return entries, stats
+        return entries + kept_splits, stats
+    entries += kept_splits
 
     m = match(score, sv_notes)
     ours = score["notes"]
@@ -111,10 +125,11 @@ def from_svp(wd: WorkDir, svp_path: Path, track: int = 1) -> tuple[list[dict[str
 
 
 def join_tokens(words: list[str]) -> str:
-    """Words back into line text that tokenizes to the same words."""
+    """Words back into line text that tokenizes to the same words. A Japanese
+    mora that starts with っ only starts a phrase, so it gets a space before it."""
     out = ""
     for w in words:
-        if out and (w[0].isascii() or out[-1].isascii()):
+        if out and (w[0].isascii() or out[-1].isascii() or w[0] == "っ"):
             out += " "
         out += w
     return out

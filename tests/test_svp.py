@@ -108,3 +108,20 @@ def test_from_svp_fixes_missing_subtitle_words(tmp_path):
     entries, stats = compare.from_svp(wd, f)
     assert [e["type"] for e in entries] == ["line_text", "line_version"]
     assert entries[0]["text"] == "天海空"
+
+
+def test_from_svp_split_decisions(tmp_path):
+    wd = make_run(tmp_path)
+    (wd.root / "05_splits" / "boundaries.json").write_text("[]", encoding="utf-8")
+    score = json.loads((wd.root / "score.json").read_text(encoding="utf-8"))
+    score["notes"][1]["flags"] = ["auto_split"]  # the note at 0.5 s was cut from the one at 0.0 s
+    (wd.root / "score.json").write_text(json.dumps(score, ensure_ascii=False), encoding="utf-8")
+    joined = tmp_path / "joined.svp"
+    joined.write_text(json.dumps(project([n(0, 2, 60, "天"), n(2, 2, 64, "空")]), ensure_ascii=False), encoding="utf-8")
+    entries, stats = compare.from_svp(wd, joined)
+    assert entries == [{"type": "split", "at": 0.5, "action": "reject"}] and stats["needs_rerun"] == 1
+    kept = tmp_path / "kept.svp"
+    kept.write_text(json.dumps(project([n(0, 1, 60, "天"), n(1, 1, 62, "-"), n(2, 2, 64, "空")]), ensure_ascii=False),
+                    encoding="utf-8")
+    entries, stats = compare.from_svp(wd, kept)
+    assert entries == [{"type": "split", "at": 0.5, "action": "confirm"}] and "needs_rerun" not in stats

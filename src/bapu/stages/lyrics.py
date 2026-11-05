@@ -5,12 +5,22 @@ stays in the (gitignored) work directory; `fusion.json` lists what dictation
 changed, by line number and time only. Metrics carry counts only.
 
 Languages (`langs`, shared with the dictation stage): any of `yue` (Cantonese),
-`zh` (Mandarin) and `en` (English). Latin words are always English. Chinese
-characters are read as Cantonese if it is selected, otherwise Mandarin; a
-`line_lang` correction switches single lines (e.g. the Mandarin lines of a
-mixed song). Neither the speech model's language detection nor the aligner's
-confidence can tell sung Cantonese from Mandarin (notes), so this is the
-user's call, not guessed.
+`zh` (Mandarin), `en` (English) and `ja` (Japanese). Latin words are English
+(in a Japanese song: unless the line reads as romaji, below). Chinese
+characters are read as Cantonese if it is selected, otherwise
+Mandarin; a `line_lang` correction switches single lines (e.g. the Mandarin
+lines of a mixed song). Neither the speech model's language detection nor the
+aligner's confidence can tell sung Cantonese from Mandarin (notes), so this is
+the user's call, not guessed.
+
+Japanese may only be combined with English: kanji are shared with Chinese, so
+a character's language must follow from the song. In a Japanese song, kanji
+and kana become hiragana morae, one token (and one syllable) each
+(bapu.lyrics.japanese), keyed by their Hepburn letters. Lyrics written in
+romaji are decided per line (bapu.lyrics.parse.romaji_plan): a romaji line's
+words become hiragana morae the same way, the rest stay English words. Lines
+decided on mixed evidence are counted (`romaji_uncertain_lines`) and listed in
+the review report; `line_lang` `ja` / `en` settles a line.
 """
 
 from __future__ import annotations
@@ -20,10 +30,10 @@ from typing import Any
 
 from bapu.lyrics import g2p
 from bapu.lyrics.fuse import Tok, dictation_tokens, fuse, keys_for
-from bapu.lyrics.parse import parse_file, tokenize
+from bapu.lyrics.parse import parse_file, tokenize, tokenize_line
 from bapu.stages.base import Stage, StageContext, StageResult
 
-SUPPORTED = ("yue", "zh", "en")
+SUPPORTED = ("yue", "zh", "en", "ja")
 
 
 def check_langs(langs: Any) -> list[str]:
@@ -32,13 +42,28 @@ def check_langs(langs: Any) -> list[str]:
     langs = [str(x) for x in langs]
     bad = [x for x in langs if x not in SUPPORTED]
     if bad or not langs:
-        raise ValueError(f"不支持的语言 {', '.join(bad) or '（空）'}；可选：yue（粤语）、zh（普通话）、en（英语）")
+        raise ValueError(f"不支持的语言 {', '.join(bad) or '（空）'}；"
+                         "可选：yue（粤语）、zh（普通话）、en（英语）、ja（日语）")
+    if "ja" in langs and any(x in ("yue", "zh") for x in langs):
+        raise ValueError("日语不能和粤语、普通话一起选：汉字在这几种语言里写法相同，没法判断该按哪种语言读。"
+                         "日语只能单独选，或者和英语（en）一起选")
     return langs
 
 
 def chinese_of(langs: list[str]) -> list[str]:
     """The selected Chinese languages, in order; Cantonese if none was selected."""
     return [x for x in langs if x in ("yue", "zh")] or ["yue"]
+
+
+def main_lang(langs: list[str]) -> str:
+    """The language CJK characters are read in by default: Japanese if selected
+    (it excludes Chinese), else the first Chinese language."""
+    return "ja" if "ja" in langs else chinese_of(langs)[0]
+
+
+def latin_uncertain(latin: dict[str, Any]) -> bool:
+    """A line's romaji / English reading was decided by mixed votes (and not set by the user)."""
+    return not latin["forced"] and 0 < latin["romaji_votes"] < latin["votes"]
 
 
 def _tok_json(t: Tok, line_lang: dict[int, str]) -> dict[str, Any]:
@@ -56,32 +81,47 @@ def _tok_json(t: Tok, line_lang: dict[int, str]) -> dict[str, Any]:
 
 def _run(ctx: StageContext) -> StageResult:
     langs = check_langs(ctx.params["langs"])
-    chinese = chinese_of(langs)
+    default = main_lang(langs)
+    # Chinese lines can switch between Cantonese and Mandarin; a Japanese song's
+    # characters are read as Japanese throughout, and `ja` on a line reads its
+    # Latin words as romaji. Any line can be set to English (in a Japanese song
+    # its Latin words then stay English words).
+    japanese = default == "ja"
+    switchable = ("ja",) if japanese else ("yue", "zh")
     used: set[int] = set()
     dictation = json.loads(ctx.inputs["dictation"].read_text(encoding="utf-8"))["phrases"]
     text_fix = {int(c["line"]): c for c in ctx.corrections if c["type"] == "line_text"}
-    forced = {int(c["line"]): str(c["lang"]) for c in ctx.corrections if c["type"] == "line_lang"}
+    forced = {int(c["line"]): str(c["lang"]) for c in ctx.corrections
+              if c["type"] == "line_lang" and str(c["lang"]) in switchable + ("en",)}
+
+    def tok(text: str) -> list[str]:
+        return tokenize(text, langs)
 
     if "lyrics" in ctx.inputs:
-        lines = [{"line": i, "start": ln.start, "end": ln.end, "tokens": ln.tokens}
-                 for i, ln in enumerate(parse_file(ctx.inputs["lyrics"]), 1)]
+        lines = [{"line": i, "start": ln.start, "end": ln.end, "text": ln.text, "tokens": ln.tokens, "latin": ln.latin}
+                 for i, ln in enumerate(parse_file(ctx.inputs["lyrics"], langs), 1)]
         mode = "fused"
     else:
-        lines = [{"line": i, "start": p["t0"], "end": p["t1"], "tokens": tokenize(p["text"])}
+        lines = [{"line": i, "start": p["t0"], "end": p["t1"], "text": p["text"]}
                  for i, p in enumerate(dictation, 1)]
+        for ln in lines:
+            ln["tokens"], ln["latin"] = tokenize_line(ln["text"], langs)
         mode = "dictation_only"
     for ln in lines:
         if ln["line"] in text_fix:
-            ln["tokens"] = tokenize(str(text_fix[ln["line"]]["text"]))
+            ln["text"] = str(text_fix[ln["line"]]["text"])
             used.add(text_fix[ln["line"]]["_id"])
+        if ln["line"] in text_fix or japanese and ln["line"] in forced:
+            romaji = {"ja": True, "en": False}.get(forced.get(ln["line"], "")) if japanese else None
+            ln["tokens"], ln["latin"] = tokenize_line(ln["text"], langs, romaji)
     for c in ctx.corrections:
-        if c["type"] == "line_lang" and any(ln["line"] == int(c["line"]) for ln in lines):
+        if (c["type"] == "line_lang" and str(c["lang"]) in switchable + ("en",)
+                and any(ln["line"] == int(c["line"]) for ln in lines)):
             used.add(c["_id"])
 
-    default = chinese[0]
     l_langs = {ln["line"]: default for ln in lines}
     for line, lang in forced.items():
-        if lang in ("yue", "zh"):
+        if lang in switchable:
             l_langs[line] = lang
     ref: list[Tok] = []
     for ln in lines:
@@ -95,7 +135,7 @@ def _run(ctx: StageContext) -> StageResult:
         return next((lang for a, b, lang in timed if a - 0.3 <= t <= b + 0.3), default)
 
     if mode == "fused":
-        fused, events = fuse(ref, dictation_tokens(dictation, tokenize, lang_at),
+        fused, events = fuse(ref, dictation_tokens(dictation, tok, lang_at),
                              locked_lines=set(text_fix), max_insert=int(ctx.params["max_insert"]))
     else:
         fused, events = ref, []
@@ -109,14 +149,22 @@ def _run(ctx: StageContext) -> StageResult:
     for ln in lines:
         toks = [_tok_json(t, {x: "en" for x in english_lines}) for t in fused if t.line == ln["line"]]
         out_lines.append({"line": ln["line"], "start": ln["start"], "end": ln["end"],
-                          "lang": l_langs.get(ln["line"], chinese[0]), "tokens": toks})
+                          "lang": l_langs.get(ln["line"], default), "tokens": toks})
+        if ln["latin"]:
+            out_lines[-1]["latin"] = ln["latin"]  # counts only: how its Latin words were read
     out_lines = [ln for ln in out_lines if ln["tokens"]]
     out = ctx.out_dir / "lyrics.json"
-    out.write_text(json.dumps({"lang": chinese[0], "langs": langs, "mode": mode, "lines": out_lines},
+    out.write_text(json.dumps({"lang": default, "langs": langs, "mode": mode, "lines": out_lines},
                               ensure_ascii=False, indent=1), encoding="utf-8")
     (ctx.out_dir / "fusion.json").write_text(json.dumps(events, indent=1), encoding="utf-8")
     (ctx.out_dir / "corrections_used.json").write_text(json.dumps(sorted(used)), encoding="utf-8")
     toks = [t for ln in out_lines for t in ln["tokens"]]
+    romaji_metrics = {}
+    if japanese:
+        latin = [ln["latin"] for ln in out_lines if ln.get("latin")]
+        romaji_metrics = {"romaji_lines": sum(1 for x in latin if x["romaji_words"]),
+                          "english_lines": sum(1 for x in latin if x["read_as"] == "en"),
+                          "romaji_uncertain_lines": sum(1 for x in latin if latin_uncertain(x))}
     return StageResult(
         outputs={"lyrics_lines": out, "fusion": ctx.out_dir / "fusion.json"},
         metrics={
@@ -128,6 +176,7 @@ def _run(ctx: StageContext) -> StageResult:
             "alternatives": sum(1 for t in toks if t["alt"]),
             "gaps_kept_reference": sum(1 for e in events if e["type"] in ("differs", "extra_ignored")),
             "no_reading": sum(1 for t in toks if not t["letters"]),
+            **romaji_metrics,
         },
     )
 

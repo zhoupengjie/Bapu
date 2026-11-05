@@ -126,7 +126,7 @@ function ThemeButton() {
   );
 }
 
-const SHORT: Record<Lang, string> = { "zh-CN": "中", en: "EN" };
+const SHORT: Record<Lang, string> = { "zh-CN": "中", en: "EN", ja: "日" };
 
 function LangButton() {
   const l = getLang();

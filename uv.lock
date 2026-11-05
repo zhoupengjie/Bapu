@@ -151,6 +151,8 @@ dependencies = [
     { name = "scipy" },
     { name = "soundfile" },
     { name = "soxr" },
+    { name = "sudachidict-core" },
+    { name = "sudachipy" },
     { name = "tojyutping" },
     { name = "torch", version = "2.11.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "torch", version = "2.13.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
@@ -189,6 +191,8 @@ requires-dist = [
     { name = "scipy", specifier = ">=1.18" },
     { name = "soundfile", specifier = ">=0.14" },
     { name = "soxr", specifier = ">=1.1" },
+    { name = "sudachidict-core", specifier = ">=20261015" },
+    { name = "sudachipy", specifier = ">=0.7.0" },
     { name = "tojyutping", specifier = ">=3.2" },
     { name = "torch", marker = "sys_platform != 'darwin'", specifier = "==2.11.0", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torch", marker = "sys_platform == 'darwin'", specifier = "==2.13.0" },
@@ -1708,6 +1712,30 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/48/bb/3d8757f21e9a53d9035c9eb039a777047139a16bfdbedfc7a58241c3d914/starlette-1.10.0.tar.gz", hash = "sha256:b8399098d4c1e3522734f7235dc79b1fc967f96cf139c81e0fa30479e0685f9b", size = 2734356, upload-time = "2026-10-24T15:04:12.342Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/88/2e/947cfe02def9371c07cd5bf5b6b61c829e9aecb9904db02a66cfafbc1eec/starlette-1.10.0-py3-none-any.whl", hash = "sha256:478c0ab3b4ced6e82719849c118fa406f0278a3499c1a898cd15cd31bdc38ce4", size = 80571, upload-time = "2026-10-24T15:04:10.371Z" },
+]
+
+[[package]]
+name = "sudachidict-core"
+version = "20261015"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "sudachipy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/70/04/4e8698fcb26999fc9381911aea95a4c861e219c098476b784f54a0cd5c36/sudachidict_core-20261015.tar.gz", hash = "sha256:32d2bfc1491b82659959d28f79eb7c034d3a57d77f7610c3d2ea834151d15d23", size = 9157, upload-time = "2026-10-15T08:32:33.402Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3d/6a/9dddc36e33ff7f86e394315a77b90d0f41bfd161e011d77a8397662d53e0/sudachidict_core-20261015-py3-none-any.whl", hash = "sha256:6d7774b518e64c88a0578975d569590b3dae3b3c834f166486aa611879ee9d98", size = 76937301, upload-time = "2026-10-15T08:37:35.957Z" },
+]
+
+[[package]]
+name = "sudachipy"
+version = "0.7.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/fc/1d/b34702f38a8bd34972836538d222209095d5aba7faff79d56bce3fb2640c/sudachipy-0.7.0.tar.gz", hash = "sha256:14a2505e7d086fe9da64c0048d8e2de13cdded3aac4f1e047929cef51dba338c", size = 304664, upload-time = "2026-09-24T01:34:56.238Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/44/aa/47edbec02618803ac8ef8f1561b233760bbd266fb040ba9d4d577a5f1773/sudachipy-0.7.0-cp310-abi3-macosx_10_12_universal2.whl", hash = "sha256:6be34e856c99498e990904f7155e1a102f675cf5edfdaf7a396f26d71ce4b333", size = 3147103, upload-time = "2026-09-24T01:34:43.053Z" },
+    { url = "https://files.pythonhosted.org/packages/88/11/3b740eea1796d1ce6f7bdaa1f5470685dbcbfcacf751f3aa06d9da72856f/sudachipy-0.7.0-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:0e60cefd3a7a9680206ae160bf86d266d0d60e434adac2384f8c7a6dfb0f3ba7", size = 1561984, upload-time = "2026-09-24T01:34:45.761Z" },
+    { url = "https://files.pythonhosted.org/packages/1d/2d/b2c2511b3627032e81ef1626d6bce4506efacc7b698ca0e70cf6b4345e86/sudachipy-0.7.0-cp310-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:dfc90631aa2276d2165e1995bc94b56c9f5bc27b875f43fb7d67e4a3b7346d4f", size = 1758941, upload-time = "2026-09-24T01:34:47.986Z" },
+    { url = "https://files.pythonhosted.org/packages/e9/a1/03e40b0eadbdd48ed47aef7aaf27d4703f5cc225750872af1a26de08ec2b/sudachipy-0.7.0-cp310-abi3-win_amd64.whl", hash = "sha256:8d0429db2d02d408daa7dccd062a6d8c2984a07f8e448b49a3ea694377617658", size = 1515929, upload-time = "2026-09-24T01:34:49.307Z" },
 ]
 
 [[package]]
