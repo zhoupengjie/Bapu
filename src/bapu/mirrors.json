@@ -1,0 +1,36 @@
+{
+  "_comment": "Where Bapu downloads Python, packages, PyTorch and models from. Read by the desktop shell (first-launch setup) and by bapu.sources (models, updates). Every file is still checked against its SHA-256, so a mirror cannot slip in a different file.",
+  "official": {
+    "label": "官方源",
+    "detail": "PyPI、download.pytorch.org、HuggingFace、GitHub",
+    "python": null,
+    "pypi": "https://pypi.org/simple",
+    "torch": {
+      "mode": "index",
+      "cuda": "https://download.pytorch.org/whl/cu128",
+      "cpu": "https://download.pytorch.org/whl/cpu",
+      "xpu": "https://download.pytorch.org/whl/xpu"
+    },
+    "rewrite": []
+  },
+  "china": {
+    "label": "国内镜像",
+    "detail": "阿里云 PyPI 和 PyTorch、npmmirror（Python）、hf-mirror（HuggingFace）、ghfast.top（GitHub 加速）",
+    "python": "https://registry.npmmirror.com/-/binary/python-build-standalone",
+    "pypi": "https://mirrors.aliyun.com/pypi/simple/",
+    "torch": {
+      "mode": "find-links",
+      "cuda": "https://mirrors.aliyun.com/pytorch-wheels/cu128/",
+      "cpu": "https://mirrors.aliyun.com/pytorch-wheels/cpu/",
+      "xpu": "https://mirrors.aliyun.com/pytorch-wheels/xpu/"
+    },
+    "rewrite": [
+      ["https://huggingface.co/", "https://hf-mirror.com/"],
+      ["https://github.com/", "https://ghfast.top/https://github.com/"]
+    ]
+  },
+  "probe": {
+    "official": "https://download.pytorch.org/whl/cu128/torch-2.11.0%2Bcu128-cp312-cp312-win_amd64.whl",
+    "china": "https://mirrors.aliyun.com/pytorch-wheels/cu128/torch-2.11.0%2Bcu128-cp312-cp312-win_amd64.whl"
+  }
+}

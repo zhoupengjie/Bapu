@@ -219,14 +219,25 @@ def take_over_leftover(folder: Path, audio: Path) -> str:
     same = False
     if manifest.exists():
         try:
-            src = (json.loads(manifest.read_text(encoding="utf-8")).get("sources") or {}).get("source") or {}
+            src = (json.loads(_retry(lambda: manifest.read_text(encoding="utf-8"))).get("sources") or {}).get("source") or {}
             same = src.get("sha256") == sha256_file(Path(audio))
         except (ValueError, OSError):
             same = False
     if same:
         return "reused"
-    data.rename(folder / f"{DATA}-old-{time.strftime('%Y%m%d-%H%M%S')}")
+    _retry(lambda: data.rename(folder / f"{DATA}-old-{time.strftime('%Y%m%d-%H%M%S')}"))
     return "set_aside"
+
+
+def _retry(fn, attempts: int = 3, wait: float = 0.1):
+    """Windows: antivirus or the search indexer may hold a just-written file for a moment."""
+    for k in range(attempts):
+        try:
+            return fn()
+        except PermissionError:
+            if k == attempts - 1:
+                raise
+            time.sleep(wait)
 
 
 def copy_input(folder: Path, src: Path) -> Path:

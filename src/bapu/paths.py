@@ -44,6 +44,15 @@ def torch_home() -> Path:
     return models_dir() / "torch"
 
 
+def data_dir() -> Path:
+    """Bapu's own settings and recent-projects list: `<home>/data` (portable) or `work/`."""
+    d = os.environ.get("BAPU_DATA_DIR")
+    if d:
+        return Path(d).resolve()
+    h = home()
+    return h / "data" if h else Path("work").resolve()
+
+
 def runtime_info() -> dict[str, Any] | None:
     """What the first-launch setup installed (portable app only)."""
     h = home()

@@ -24,7 +24,9 @@ from typing import Any, Callable, Sequence
 
 from bapu import corrections as corr
 from bapu import jobs, pipeline, project, report
+from bapu.downloads import Downloads
 from bapu.monitor import LoadMonitor
+from bapu.updater import Updater
 from bapu.models.registry import ModelSpec, Registry, RegistryError
 from bapu.progress import ProgressEvent
 from bapu.stages import STAGES
@@ -123,6 +125,7 @@ class JobService:
         self.root.mkdir(parents=True, exist_ok=True)
         self.index = project.ProjectIndex(index or self.root / "projects.json")
         self.monitor = LoadMonitor()
+        self.updater = Updater()
         self._device: dict[str, Any] | None = None
         self.registry = registry or Registry.load()
         self.stages = stages
@@ -133,6 +136,9 @@ class JobService:
         self._lock = threading.Lock()
         self._worker: threading.Thread | None = None
         self._pulls: dict[str, threading.Thread] = {}
+        # the models the default pipeline uses, for the 环境 page's one download queue
+        self.downloads = Downloads(self.registry, [
+            s.defaults[p] for s in self.stages for p in s.model_params if isinstance(s.defaults.get(p), str)])
 
     # -- lifecycle -------------------------------------------------------------
     def start(self) -> None:
@@ -254,6 +260,17 @@ class JobService:
         project.ensure(folder)
         self.index.add(job_id, folder)
         return job_id
+
+    def save(self, job_id: str) -> dict[str, Any]:
+        """保存工程: write the project file again (results are saved as each step finishes)."""
+        wd = self.workdir(job_id)
+        meta = self._meta(wd)
+        meta["saved_at"] = time.time()
+        try:
+            project.write(project.folder_of(wd.root), meta)
+        except OSError as e:
+            raise ServiceError(f"保存不了工程文件：{e}") from None
+        return self.summary(job_id)
 
     def save_upload(self, job_id: str, kind: str, filename: str, data: bytes) -> Path:
         """Store an uploaded input inside the project (`inputs/`) and point the project at it."""

@@ -14,15 +14,18 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator
 
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from bapu import compare, jobs, pipeline, project
+from bapu import __version__, compare, jobs, pipeline, project, sources
 from bapu import corrections as corr_mod
 from bapu.server import dialogs
 from bapu.service import JobService, RunRequest, ServiceError
 from bapu.stages.separate import DECODED
+
+DESKTOP_ORIGINS = ("http://tauri.localhost", "https://tauri.localhost", "tauri://localhost")
 
 AUDIO_STEMS = {
     "vocals": ("separate", "vocals"), "instrumental": ("separate", "instrumental"),
@@ -51,6 +54,15 @@ class PullBody(BaseModel):
     accept_license: bool = False
 
 
+class SourceBody(BaseModel):
+    choice: str | None = None  # auto | official | china
+    threads: int | None = None  # parallel connections per download, 1..16
+
+
+class DownloadBody(BaseModel):
+    ids: list[str] | None = None  # default: every model the pipeline needs that is missing
+
+
 class AssociationBody(BaseModel):
     on: bool
 
@@ -72,7 +84,11 @@ def create_app(service: JobService, static_dir: Path | None = None) -> FastAPI:
         yield
         service.stop()
 
-    app = FastAPI(title="Bapu", version="0.1", lifespan=lifespan)
+    app = FastAPI(title="Bapu", version=__version__, lifespan=lifespan)
+    # The desktop window shows the UI built into Bapu.exe (origin tauri.localhost) and calls this
+    # service on 127.0.0.1; no other site may.
+    app.add_middleware(CORSMiddleware, allow_origins=list(DESKTOP_ORIGINS), allow_methods=["*"], allow_headers=["*"],
+                       expose_headers=["Content-Range", "Content-Length", "Content-Disposition", "Accept-Ranges"])
 
     @app.exception_handler(ServiceError)
     async def service_error(_: Request, exc: ServiceError) -> JSONResponse:
@@ -85,6 +101,42 @@ def create_app(service: JobService, static_dir: Path | None = None) -> FastAPI:
     @app.get("/api/system")
     def system() -> dict[str, Any]:
         return service.system()
+
+    # -- download source and updates ----------------------------------------------------------
+    @app.get("/api/system/sources")
+    def get_sources() -> dict[str, Any]:
+        return sources.describe()
+
+    @app.put("/api/system/sources")
+    def set_sources(body: SourceBody) -> dict[str, Any]:
+        if body.choice is not None:
+            if body.choice not in sources.CHOICES:
+                raise ServiceError(f"没有这种下载源：{body.choice}")
+            sources.save(source=body.choice)
+        if body.threads is not None:
+            sources.save(threads=max(1, min(sources.MAX_THREADS, body.threads)))
+        return sources.describe()
+
+    @app.post("/api/system/sources/measure")
+    def measure_sources() -> dict[str, Any]:
+        """Time the official servers and the China mirrors from this machine."""
+        return {**sources.measure(), **sources.describe()}
+
+    @app.get("/api/update")
+    def update_status() -> dict[str, Any]:
+        return service.updater.status()
+
+    @app.post("/api/update/check")
+    def update_check() -> dict[str, Any]:
+        return service.updater.check()
+
+    @app.post("/api/update/download", status_code=202)
+    def update_download() -> dict[str, Any]:
+        try:
+            service.updater.download()
+        except ValueError as e:
+            raise ServiceError(str(e)) from None
+        return service.updater.status()
 
     @app.get("/api/system/environment")
     def environment() -> dict[str, Any]:
@@ -114,6 +166,19 @@ def create_app(service: JobService, static_dir: Path | None = None) -> FastAPI:
     def pull(model_id: str, body: PullBody) -> dict[str, str]:
         service.pull(model_id, body.accept_license)
         return {"state": "downloading"}
+
+    # one queue for the 环境 page: the models the pipeline needs, resumable
+    @app.get("/api/downloads")
+    def downloads() -> dict[str, Any]:
+        return service.downloads.status()
+
+    @app.post("/api/downloads/start")
+    def downloads_start(body: DownloadBody) -> dict[str, Any]:
+        return service.downloads.start(body.ids)
+
+    @app.post("/api/downloads/pause")
+    def downloads_pause() -> dict[str, Any]:
+        return service.downloads.pause()
 
     @app.delete("/api/models/{model_id}")
     def remove_model(model_id: str) -> dict[str, int]:
@@ -193,6 +258,10 @@ def create_app(service: JobService, static_dir: Path | None = None) -> FastAPI:
                 raise ServiceError(str(e)) from None
         service.enqueue(job_id, RunRequest(body.from_stage, body.until, overrides))
         return service.summary(job_id)
+
+    @app.post("/api/jobs/{job_id}/save")
+    def save(job_id: str) -> dict[str, Any]:
+        return service.save(job_id)
 
     @app.post("/api/jobs/{job_id}/cancel")
     def cancel(job_id: str) -> dict[str, Any]:

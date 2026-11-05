@@ -2,10 +2,10 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Bapu",
   "mainBinaryName": "Bapu",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "dev.bapu.desktop",
   "build": {
-    "frontendDist": "../splash"
+    "frontendDist": "../../web/dist"
   },
   "app": {
     "withGlobalTauri": true,
@@ -27,11 +27,20 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"],
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
     "fileAssociations": [
       {
-        "ext": ["bapu"],
+        "ext": [
+          "bapu"
+        ],
         "name": "Bapu 工程",
         "description": "Bapu 扒谱工程",
         "role": "Editor"

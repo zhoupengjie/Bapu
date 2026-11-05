@@ -41,6 +41,10 @@ class LicenseNotAccepted(RegistryError):
     pass
 
 
+class DownloadPaused(RegistryError):
+    """The download was paused; what has arrived stays on disk and is resumed next time."""
+
+
 class ModelNotReady(RegistryError):
     def __init__(self, spec: "ModelSpec", status: Status) -> None:
         self.spec = spec
@@ -217,7 +221,32 @@ class Registry:
         return self.entry_path(spec)
 
     # -- download ---------------------------------------------------------------
-    def pull(self, spec: ModelSpec, *, accept_license: bool = False, progress: DownloadProgress | None = None) -> Path | None:
+    def downloaded(self, spec: ModelSpec) -> int:
+        """Bytes of the model already on disk, finished or partial (no hashing: for progress only)."""
+        if not spec.needs_files:
+            return 0
+        if spec.archive is not None:
+            if all((self.model_dir(spec) / f.name).exists() for f in spec.files):
+                return spec.total_size or 0
+            return _part_bytes(self._archive_part(spec))
+        total = 0
+        for f in spec.files:
+            target = self.model_dir(spec) / f.name
+            if target.exists() and (f.size is None or target.stat().st_size == f.size):
+                total += target.stat().st_size
+            else:
+                total += _part_bytes(target.with_name(target.name + ".part"))
+        return total
+
+    def _archive_part(self, spec: ModelSpec) -> Path:
+        assert spec.archive is not None
+        return self.cache_root / "models" / ".downloads" / (spec.archive.url.rsplit("/", 1)[-1] + ".part")
+
+    def pull(self, spec: ModelSpec, *, accept_license: bool = False, progress: DownloadProgress | None = None,
+             threads: int = 1, stop: threading.Event | None = None) -> Path | None:
+        """Download what is missing. `threads` > 1 fetches large files in parallel ranges;
+        setting `stop` pauses (raises DownloadPaused) and leaves the partial files for next time."""
+        opts = {"threads": max(1, min(int(threads), 32)), "stop": stop}
         if not spec.needs_files:
             return None
         if not (accept_license or self.license_accepted(spec)):
@@ -231,24 +260,28 @@ class Registry:
         dest_dir.mkdir(parents=True, exist_ok=True)
         state = self._state()
         if spec.archive is not None:
-            self._pull_archive(spec, dest_dir, progress)
+            self._pull_archive(spec, dest_dir, progress, **opts)
         else:
             for f in spec.files:
                 target = dest_dir / f.name
                 if self._file_ok(target, f, state):
                     continue
-                self._download_file(f, target, progress)
+                self._download_file(f, target, progress, **opts)
         st = self.status(spec)
         if st != "ready":
             raise RegistryError(f"{spec.id}: 下载后校验失败（{st}）")
         return self.entry_path(spec)
 
-    def _download_file(self, f: FileSpec, target: Path, progress: DownloadProgress | None) -> None:
+    def _download_file(self, f: FileSpec, target: Path, progress: DownloadProgress | None,
+                       threads: int = 1, stop: threading.Event | None = None) -> None:
+        from bapu.sources import mirror_urls
+
         errors = []
-        for url in f.urls:
+        for url in mirror_urls(f.urls):  # China mirrors first when chosen; originals as fallback
             part = target.with_name(target.name + ".part")
             try:
-                _fetch(url, part, f.size, lambda done, total: progress and progress(f.name, done, total))
+                fetch(url, part, f.size, lambda done, total: progress and progress(f.name, done, total),
+                      threads=threads, stop=stop)
             except (urllib.error.URLError, OSError) as e:
                 errors.append(f"{url}: {e}")
                 continue
@@ -260,14 +293,26 @@ class Registry:
             return
         raise RegistryError(f"{f.name}: 所有地址都下载失败\n" + "\n".join(errors))
 
-    def _pull_archive(self, spec: ModelSpec, dest_dir: Path, progress: DownloadProgress | None) -> None:
+    def _pull_archive(self, spec: ModelSpec, dest_dir: Path, progress: DownloadProgress | None,
+                      threads: int = 1, stop: threading.Event | None = None) -> None:
         arch = spec.archive
         assert arch is not None
         dl_dir = self.cache_root / "models" / ".downloads"  # partial downloads, next to the models
         dl_dir.mkdir(parents=True, exist_ok=True)
+        from bapu.sources import mirror_urls
+
         zip_name = arch.url.rsplit("/", 1)[-1]
-        part = dl_dir / (zip_name + ".part")
-        _fetch(arch.url, part, arch.size, lambda done, total: progress and progress(zip_name, done, total))
+        part = self._archive_part(spec)
+        errors = []
+        for url in mirror_urls([arch.url]):
+            try:
+                fetch(url, part, arch.size, lambda done, total: progress and progress(zip_name, done, total),
+                      threads=threads, stop=stop)
+                break
+            except (urllib.error.URLError, OSError) as e:
+                errors.append(f"{url}: {e}")
+        else:
+            raise RegistryError(f"{zip_name}: 所有地址都下载失败\n" + "\n".join(errors))
         if arch.sha256 and sha256_file(part) != arch.sha256.lower():
             part.unlink(missing_ok=True)
             raise RegistryError(f"{zip_name}: SHA-256 不符")
@@ -292,15 +337,17 @@ class Registry:
     def download_info(self, spec: ModelSpec) -> dict:
         """Everything needed to fetch a model by hand: where each file comes
         from, where it must go, and the checksum it must match."""
+        from bapu.sources import mirror_urls
+
         folder = self.model_dir(spec).resolve() if spec.needs_files else None
         files = []
         for f in spec.files:
             path = folder / f.name if folder else None
-            files.append({"name": f.name, "size": f.size, "sha256": f.sha256, "urls": list(f.urls),
+            files.append({"name": f.name, "size": f.size, "sha256": f.sha256, "urls": mirror_urls(f.urls),
                           "path": str(path) if path else None, "present": bool(path and path.exists())})
         info = {"dir": str(folder) if folder else None, "files": files, "archive": None}
         if spec.archive is not None:
-            info["archive"] = {"url": spec.archive.url, "size": spec.archive.size,
+            info["archive"] = {"url": mirror_urls([spec.archive.url])[0], "size": spec.archive.size,
                                "name": spec.archive.url.rsplit("/", 1)[-1]}
         return info
 
@@ -315,8 +362,61 @@ class Registry:
         return freed
 
 
-def _fetch(url: str, part: Path, size: int | None, progress: Callable[[int, int | None], object]) -> None:
-    """Download `url` into `part`, resuming when the server honours Range."""
+BLOCK = 1 << 20
+MIN_SEGMENT = 8 << 20  # smaller files are not worth splitting
+RETRIES = 4
+
+
+def _meta(part: Path) -> Path:
+    return part.with_name(part.name + ".json")
+
+
+def _part_bytes(part: Path) -> int:
+    """How much of a partial download has arrived (ranged ones record it next to the file)."""
+    meta = _meta(part)
+    if meta.exists():
+        try:
+            return sum(done for _, _, done in json.loads(meta.read_text(encoding="utf-8"))["segments"])
+        except (ValueError, KeyError, TypeError, OSError):
+            return 0
+    return part.stat().st_size if part.exists() else 0
+
+
+def _open(url: str, start: int | None = None, end: int | None = None, timeout: float = 60):
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    if start is not None:
+        req.add_header("Range", f"bytes={start}-" + ("" if end is None else str(end)))
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
+def _ranges_ok(url: str, size: int) -> bool:
+    """Does the server send byte ranges of this file (needed to split it)?"""
+    try:
+        with _open(url, 0, 0, timeout=20) as r:
+            total = (r.headers.get("Content-Range") or "").rsplit("/", 1)[-1]
+            return getattr(r, "status", 200) == 206 and total == str(size)
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+
+
+def fetch(url: str, part: Path, size: int | None, progress: Callable[[int, int | None], object], *,
+          threads: int = 1, stop: threading.Event | None = None) -> None:
+    """Download `url` into `part`, resuming what is already there.
+
+    With a known size, `threads` > 1 and a server that honours Range, the file is split
+    into ranges fetched in parallel; their progress is kept in `<part>.json`, so a pause
+    or a crash resumes each range where it stopped. Otherwise one stream, appending."""
+    meta = _meta(part)
+    if size is not None and url.startswith(("http://", "https://")) and (
+        meta.exists() or (threads > 1 and size >= MIN_SEGMENT and not part.exists() and _ranges_ok(url, size))
+    ):
+        _fetch_ranges(url, part, size, progress, threads, stop)
+    else:
+        _fetch_stream(url, part, size, progress, stop)
+
+
+def _fetch_stream(url: str, part: Path, size: int | None, progress: Callable[[int, int | None], object],
+                  stop: threading.Event | None) -> None:
     have = part.stat().st_size if part.exists() else 0
     if size is not None and have >= size:
         if have > size:
@@ -324,17 +424,97 @@ def _fetch(url: str, part: Path, size: int | None, progress: Callable[[int, int 
             have = 0
         else:
             return
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    if have and url.startswith(("http://", "https://")):
-        req.add_header("Range", f"bytes={have}-")
-    with urllib.request.urlopen(req, timeout=60) as resp:
+    resume = bool(have) and url.startswith(("http://", "https://"))
+    with _open(url, have if resume else None) as resp:
         status = getattr(resp, "status", 200)
-        mode = "ab" if have and status == 206 else "wb"
+        mode = "ab" if resume and status == 206 else "wb"
         done = have if mode == "ab" else 0
         length = resp.headers.get("Content-Length")
         total = size if size is not None else (done + int(length) if length else None)
         with open(part, mode) as out:
-            while block := resp.read(1 << 20):
+            while block := resp.read(BLOCK):
                 out.write(block)
                 done += len(block)
                 progress(done, total)
+                if stop is not None and stop.is_set():
+                    raise DownloadPaused("已暂停")
+
+
+def _fetch_ranges(url: str, part: Path, size: int, progress: Callable[[int, int | None], object],
+                  threads: int, stop: threading.Event | None) -> None:
+    meta = _meta(part)
+    segments: list[list[int]] | None = None  # [start, end (inclusive), bytes done]
+    if meta.exists() and part.exists() and part.stat().st_size == size:
+        try:
+            m = json.loads(meta.read_text(encoding="utf-8"))
+            if m.get("size") == size:
+                segments = [[int(a), int(b), int(d)] for a, b, d in m["segments"]]
+        except (ValueError, KeyError, TypeError):
+            segments = None
+    if segments is None:
+        n = max(1, min(threads, size // MIN_SEGMENT or 1))
+        step = -(-size // n)
+        segments = [[a, min(a + step, size) - 1, 0] for a in range(0, size, step)]
+        with open(part, "wb") as out:
+            out.truncate(size)
+    lock = threading.Lock()
+    halt = threading.Event()  # set on pause or on a range that keeps failing
+    errors: list[BaseException] = []
+
+    def save() -> None:
+        with lock:
+            data = json.dumps({"size": size, "segments": segments})
+        tmp = meta.with_name(meta.name + ".tmp")
+        tmp.write_text(data, encoding="utf-8")
+        os.replace(tmp, meta)
+
+    def done_bytes() -> int:
+        with lock:
+            return sum(s[2] for s in segments)
+
+    def work(seg: list[int]) -> None:
+        tries = 0
+        with open(part, "r+b") as out:
+            while seg[0] + seg[2] <= seg[1] and not halt.is_set():
+                got = 0
+                try:
+                    with _open(url, seg[0] + seg[2], seg[1]) as resp:
+                        if getattr(resp, "status", 200) != 206:
+                            raise OSError("服务器不再支持分段下载")
+                        out.seek(seg[0] + seg[2])
+                        while seg[0] + seg[2] <= seg[1]:
+                            block = resp.read(min(BLOCK, seg[1] - seg[0] - seg[2] + 1))
+                            if not block:
+                                raise OSError("连接提前断开")
+                            out.write(block)
+                            got += len(block)
+                            with lock:
+                                seg[2] += len(block)
+                            if halt.is_set() or (stop is not None and stop.is_set()):
+                                halt.set()
+                                return
+                except (urllib.error.URLError, OSError) as e:
+                    tries = 1 if got else tries + 1  # progress before the error: a fresh start
+                    if tries >= RETRIES:
+                        errors.append(e)
+                        halt.set()
+                        return
+                    halt.wait(min(2 ** tries, 10))
+
+    save()
+    workers = [threading.Thread(target=work, args=(s,), daemon=True) for s in segments if s[2] < s[1] - s[0] + 1]
+    for w in workers:
+        w.start()
+    while any(w.is_alive() for w in workers):
+        time.sleep(0.5)
+        progress(done_bytes(), size)
+        save()
+        if stop is not None and stop.is_set():
+            halt.set()
+    save()
+    progress(done_bytes(), size)
+    if errors:
+        raise errors[0]
+    if done_bytes() < size:
+        raise DownloadPaused("已暂停")
+    meta.unlink(missing_ok=True)

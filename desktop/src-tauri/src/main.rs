@@ -1,19 +1,23 @@
 //! Bapu desktop shell.
 //!
-//! The work is done by the local Python service (`bapu serve`): this program
-//! starts it on a free port, shows its web UI in a window, opens the `.bapu`
-//! project it was launched with (double-click, drag onto the window, or a
-//! second launch while it is open), and stops the service when it closes.
+//! The web UI is built into this program (web/dist), so it opens even before
+//! Python exists. The work is done by the local Python service (`bapu serve`):
+//! this program starts it on a free port and tells the page where it is
+//! (`service_status` / the "service" event); the page then calls its API.
+//! Projects it is launched with (double-click, drag onto the window, a second
+//! launch) are handed to the page, which opens them.
 //!
-//! Portable app (an `app\` folder next to Bapu.exe): on first launch it sets up
-//! its own Python inference environment in `runtime\` with the bundled uv —
-//! Python 3.12, Bapu's packages and the PyTorch build for the GPU the user
-//! picks — without touching system Python, the registry or the user profile.
-//! Development build: uses the checkout's `.venv`.
+//! Portable app (an `app\` folder next to Bapu.exe): until its own Python
+//! inference environment is set up in `runtime\`, the page's 环境 tab installs
+//! it (setup.rs: Python 3.12, Bapu's packages and the PyTorch build for the
+//! chosen device, from the chosen download source) — without touching system
+//! Python or the registry. Development build: uses the checkout's `.venv`.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod load;
 mod setup;
+mod updater;
 
 use std::fs::{self, OpenOptions};
 use std::net::TcpListener;
@@ -24,7 +28,7 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use tauri::{AppHandle, DragDropEvent, Manager, RunEvent, Url, WindowEvent};
+use tauri::{AppHandle, DragDropEvent, Emitter, Manager, RunEvent, WindowEvent};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 #[derive(Default)]
@@ -32,6 +36,10 @@ struct Backend {
     child: Mutex<Option<Child>>,
     port: AtomicU16,
     started: AtomicBool,
+    /// (state, error): no_runtime | needs_sync | installing | starting | ready | failed
+    status: Mutex<(String, Option<String>)>,
+    /// a project to open once the page asks (launch argument)
+    pending: Mutex<Option<String>>,
 }
 
 /// Where Bapu runs from.
@@ -154,24 +162,6 @@ fn wait_ready(port: u16, child: &Mutex<Option<Child>>, limit: Duration) -> Resul
     Err("Bapu 服务一直没有响应".into())
 }
 
-/// Register a project with the service; its id for `#/p/<id>`.
-fn open_project(port: u16, path: &str) -> Result<String, String> {
-    let body = serde_json::json!({ "path": path }).to_string();
-    let r = ureq::post(&format!("{}/api/projects/open", base(port)))
-        .set("Content-Type", "application/json")
-        .timeout(Duration::from_secs(30))
-        .send_string(&body);
-    let v: serde_json::Value = match r {
-        Ok(r) => r.into_json().map_err(|e| e.to_string())?,
-        Err(ureq::Error::Status(_, r)) => {
-            let v: serde_json::Value = r.into_json().unwrap_or_default();
-            return Err(v["error"].as_str().unwrap_or("打不开这个工程").to_string());
-        }
-        Err(e) => return Err(e.to_string()),
-    };
-    v["id"].as_str().map(str::to_string).ok_or_else(|| "服务没有返回工程编号".into())
-}
-
 fn is_project_path(a: &str) -> bool {
     a.to_lowercase().ends_with(".bapu") || Path::new(a).is_dir()
 }
@@ -181,39 +171,54 @@ fn project_arg(args: &[String]) -> Option<String> {
     args.iter().skip(1).find(|a| is_project_path(a)).cloned()
 }
 
-/// Show the UI, opening `project` if given.
-fn show(app: &AppHandle, port: u16, project: Option<String>) {
-    let mut url = format!("{}/", base(port));
-    if let Some(p) = project {
-        match open_project(port, &p) {
-            Ok(id) => url.push_str(&format!("#/p/{id}")),
-            Err(e) => {
-                app.dialog().message(format!("打不开 {p}\n\n{e}")).title("Bapu").kind(MessageDialogKind::Error).show(|_| {});
-            }
-        }
+/// What the page needs to know about the Python service; also sent as the "service" event.
+fn status(app: &AppHandle) -> serde_json::Value {
+    let st = app.state::<Backend>();
+    let s = st.status.lock().unwrap().clone();
+    let mode = Mode::detect();
+    serde_json::json!({
+        "state": s.0, "error": s.1, "port": st.port.load(Ordering::SeqCst),
+        "portable": matches!(mode, Mode::Portable(_)), "log": mode.log_path().display().to_string(),
+        "setup_running": setup::running(),
+    })
+}
+
+fn set_status(app: &AppHandle, state: &str, error: Option<String>) {
+    *app.state::<Backend>().status.lock().unwrap() = (state.to_string(), error);
+    let _ = app.emit("service", status(app));
+}
+
+/// The runtime install failed: back to waiting for it (the 环境 page shows the error and offers a retry).
+pub fn set_status_failed_setup(app: &AppHandle) {
+    let home = Mode::detect();
+    let state = match &home {
+        Mode::Portable(h) if setup::ready(h) => "needs_sync",
+        _ => "no_runtime",
+    };
+    set_status(app, state, None);
+}
+
+/// Hand a project to the page (it opens it through the API).
+fn open_in_page(app: &AppHandle, path: String) {
+    let st = app.state::<Backend>();
+    if st.port.load(Ordering::SeqCst) == 0 {
+        *st.pending.lock().unwrap() = Some(path); // picked up when the page asks
+    } else {
+        let _ = app.emit("open-project", path);
     }
     if let Some(w) = app.get_webview_window("main") {
-        if let Ok(u) = Url::parse(&url) {
-            let _ = w.navigate(u);
-        }
         let _ = w.unminimize();
         let _ = w.set_focus();
     }
 }
 
-fn splash_error(app: &AppHandle, message: &str) {
-    if let Some(w) = app.get_webview_window("main") {
-        let text = serde_json::to_string(message).unwrap_or_default();
-        let _ = w.eval(&format!("window.showError && window.showError({text})"));
-    }
-}
-
-/// Start the service (once) and show the UI when it answers.
+/// Start the service (once) and tell the page when it answers.
 pub fn start_once(app: &AppHandle) {
     let state = app.state::<Backend>();
     if state.started.swap(true, Ordering::SeqCst) {
         return;
     }
+    set_status(app, "starting", None);
     let handle = app.clone();
     thread::spawn(move || {
         let mode = Mode::detect();
@@ -223,38 +228,96 @@ pub fn start_once(app: &AppHandle) {
             Ok(child) => *state.child.lock().unwrap() = Some(child),
             Err(e) => {
                 state.started.store(false, Ordering::SeqCst);
-                return splash_error(&handle, &e);
+                return set_status(&handle, "failed", Some(e));
             }
         }
         if let Err(e) = wait_ready(port, &state.child, Duration::from_secs(180)) {
             state.started.store(false, Ordering::SeqCst);
-            return splash_error(&handle, &format!("{e}\n日志：{}", mode.log_path().display()));
+            return set_status(&handle, "failed", Some(format!("{e}\n日志：{}", mode.log_path().display())));
         }
         state.port.store(port, Ordering::SeqCst);
-        let args: Vec<String> = std::env::args().collect();
-        show(&handle, port, project_arg(&args));
+        set_status(&handle, "ready", None);
     });
 }
 
-/// Called by the start page: set up the runtime first, or start right away.
-#[tauri::command]
-fn boot(app: AppHandle) -> serde_json::Value {
+/// Decide at launch: start the service, or wait for the 环境 page to set up the runtime.
+fn launch(app: &AppHandle) {
     let mode = Mode::detect();
     if let Mode::Portable(home) = &mode {
+        updater::apply_staged(home); // a downloaded update, if Bapu was closed before it could be applied
         if !setup::ready(home) {
-            return serde_json::json!({ "setup": true, "info": setup::info(home) });
+            return set_status(app, "no_runtime", None);
+        }
+        if setup::needs_sync(home) {
+            // updated, and the new version needs other packages: the 环境 page brings the runtime up to date
+            return set_status(app, "needs_sync", None);
         }
     }
-    start_once(&app);
-    serde_json::json!({ "setup": false })
+    start_once(app);
 }
 
 #[tauri::command]
-fn setup_install(app: AppHandle, variant: String) -> Result<(), String> {
+fn service_status(app: AppHandle) -> serde_json::Value {
+    status(&app)
+}
+
+/// The project Bapu was launched with (once).
+#[tauri::command]
+fn take_launch_project(app: AppHandle) -> Option<String> {
+    app.state::<Backend>().pending.lock().unwrap().take()
+}
+
+#[tauri::command]
+fn setup_info() -> serde_json::Value {
+    match Mode::detect() {
+        Mode::Portable(home) => setup::info(&home),
+        Mode::Dev(_) => serde_json::json!({}),
+    }
+}
+
+#[tauri::command]
+fn setup_probe() -> serde_json::Value {
+    match Mode::detect() {
+        Mode::Portable(home) => setup::probe(&home),
+        Mode::Dev(_) => serde_json::json!({}),
+    }
+}
+
+/// Install or sync the runtime; the service starts when it is done.
+#[tauri::command]
+fn setup_install(app: AppHandle, variant: String, source: String, choice: String, measured: serde_json::Value) -> Result<(), String> {
     let Mode::Portable(home) = Mode::detect() else {
         return Err("开发版用 uv sync 准备环境".into());
     };
-    setup::install(app, home, variant)
+    // a reinstall from the 环境 page: the running service holds the runtime's files
+    stop_service(&app);
+    let st = app.state::<Backend>();
+    st.started.store(false, Ordering::SeqCst);
+    st.port.store(0, Ordering::SeqCst);
+    set_status(&app, "installing", None);
+    setup::install(app, home, variant, source, choice, measured)
+}
+
+/// Pause the runtime install; 继续 runs setup_install again and skips what is already downloaded.
+#[tauri::command]
+fn setup_pause() {
+    setup::pause();
+}
+
+/// Settings the 环境 page changes before the Python service runs (threads, download source).
+#[tauri::command]
+fn setup_settings(changes: serde_json::Value) -> Result<(), String> {
+    let Mode::Portable(home) = Mode::detect() else { return Ok(()) };
+    let allowed: serde_json::Map<String, serde_json::Value> = changes.as_object().cloned().unwrap_or_default()
+        .into_iter().filter(|(k, _)| k == "threads" || k == "source").collect();
+    setup::save_settings(&home, serde_json::Value::Object(allowed));
+    Ok(())
+}
+
+/// CPU, memory and network for the sidebar, also while the Python service is not running.
+#[tauri::command]
+fn sys_load(app: AppHandle) -> serde_json::Value {
+    app.state::<load::Load>().sample()
 }
 
 /// Is a project being processed? (closing the window would stop it)
@@ -275,28 +338,32 @@ fn main() {
     let app = tauri::Builder::default()
         // must come first: a second launch (double-click another .bapu) goes to this window
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            let port = app.state::<Backend>().port.load(Ordering::SeqCst);
-            let project = project_arg(&argv);
-            let app = app.clone();
-            thread::spawn(move || {
-                if port != 0 {
-                    show(&app, port, project);
-                } else if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.set_focus();
-                }
-            });
+            if let Some(p) = project_arg(&argv) {
+                open_in_page(app, p);
+            } else if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+            }
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(Backend::default())
-        .invoke_handler(tauri::generate_handler![boot, setup_install])
+        .manage(load::Load::default())
+        .invoke_handler(tauri::generate_handler![service_status, take_launch_project, setup_info, setup_probe, setup_install,
+            setup_pause, setup_settings, sys_load])
+        .setup(|app| {
+            let args: Vec<String> = std::env::args().collect();
+            *app.state::<Backend>().pending.lock().unwrap() = project_arg(&args);
+            launch(app.handle());
+            Ok(())
+        })
         .on_window_event(|window, event| match event {
             WindowEvent::CloseRequested { api, .. } => {
                 let app = window.app_handle().clone();
                 if setup::running() {
                     api.prevent_close();
                     app.dialog()
-                        .message("运行环境正在安装，现在退出的话下次启动要重新装。确定退出吗？")
+                        .message("运行环境正在安装。现在退出的话，下次打开 Bapu 时在环境页点继续，已经下载的部分不用重下。确定退出吗？")
                         .title("Bapu").kind(MessageDialogKind::Warning)
                         .buttons(MessageDialogButtons::OkCancelCustom("退出".into(), "继续安装".into()))
                         .show(move |quit| if quit { setup::cancel(); app.exit(0) });
@@ -314,12 +381,8 @@ fn main() {
             }
             // a .bapu dropped onto the window opens it; other files go to the page (tauri://drag-drop)
             WindowEvent::DragDrop(DragDropEvent::Drop { paths, .. }) => {
-                let app = window.app_handle().clone();
-                let port = app.state::<Backend>().port.load(Ordering::SeqCst);
                 if let Some(p) = paths.iter().map(|p| p.to_string_lossy().to_string()).find(|p| p.to_lowercase().ends_with(".bapu")) {
-                    if port != 0 {
-                        thread::spawn(move || show(&app, port, Some(p)));
-                    }
+                    open_in_page(window.app_handle(), p);
                 }
             }
             _ => {}
@@ -331,6 +394,9 @@ fn main() {
         if let RunEvent::Exit = event {
             setup::cancel();
             stop_service(app);
+            if let Mode::Portable(home) = Mode::detect() {
+                updater::apply_staged(&home); // the service is stopped: app\ can be replaced now
+            }
         }
     });
 }

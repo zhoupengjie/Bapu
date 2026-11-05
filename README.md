@@ -49,7 +49,10 @@ uv run pytest                                # 单元测试（只用虚构数据
 
 - 原曲可以是 WAV、FLAC、MP3，也可以是 MP4 / M4A / MOV / MKV 等音频或视频文件：soundfile 读不了的格式，
   在第一步用 PyAV（自带 FFmpeg，不用另装）取出第一条音轨，存成 `01_separate/source.wav` 再分离。
-- 工程：每首歌一个工程文件夹，由用户在新建时选（默认在原曲旁边，`<歌名> - Bapu`）。外面只有 `<歌名>.bapu`
+- 界面：左侧是 新建工程 / 打开工程 / 保存工程（Ctrl+S）、五个步骤（环境 → 导入 → 自动处理 → 检查 → 导出）和
+  实时负载（CPU、内存、GPU、显存、下载、上传）；浅色 / 深色 / 跟随系统，左上角切换。一次只处理一个工程。
+  “导入”一页选原曲、可选的参考歌词和语言；“检查”只列出可能不准的地方（点一下就听那一句），不在 Bapu 里改，到 SV 里改。
+- 工程：每首歌一个工程文件夹，自动放在原曲旁边（`<歌名> - Bapu`）。外面只有 `<歌名>.bapu`
   （小 JSON：名字、原曲和歌词的位置）和导出的 `.svp` / `.mid`；复制进来的原曲和歌词、修正、每一步的结果、审查报告
   都在旁边的 `.bapu/` 文件夹里。导出不会覆盖不是 Bapu 写的同名文件（例如在 SV 里改过再保存的），会另存为 `(2)`。
   旧的工程（中间结果直接放在工程文件夹里）第一次打开时自动整理进 `.bapu/`，已经算好的步骤不用重算。
@@ -57,10 +60,21 @@ uv run pytest                                # 单元测试（只用虚构数据
   网页里选文件和文件夹用的是系统对话框（由本机服务弹出），所以能拿到真实路径；拖进页面的文件会上传后复制进工程。
 - 便携版（给用户用的）：`uv run python scripts/build_portable.py --out "<文件夹>"`，生成约 40 MB 的程序文件夹
   （`Bapu.exe`、`tools/uv.exe`、`app/` 里的代码和网页、依赖清单）。用户双击 `Bapu.exe`：
-  1. 第一次启动时程序自己部署 Python 推理环境：检测显卡，选 PyTorch 版本（NVIDIA CUDA 12.8 / Intel XPU（实验）/ CPU），
-     用自带的 uv 把 Python 3.12 和全部依赖装进 `runtime/`（不建 venv，整个文件夹可以移动；不写注册表、不进 PATH、
-     不碰系统里的 Python；下载缓存装完就删）。日志在 `data/logs/setup.log`。删掉 `runtime/` 就会重新装。
-  2. 网页流程的第一步“环境”：显示推理设备，下载模型到 `models/`，可选打开“双击 .bapu 用 Bapu 打开”。
+  1. 界面内置在 `Bapu.exe` 里，直接打开，没有单独的“第一次使用”页面。流程第一步“环境”是一张清单：Python 环境、
+     流程要用的 7 个模型、Bapu 本身；装好的打勾，缺的点一次“下载”按顺序补齐，每项有进度条和网速，可以暂停、继续。
+     Python 环境：检测显卡，选 PyTorch 版本（NVIDIA CUDA 12.8 / Intel XPU（实验）/ CPU），用自带的 uv 把 Python 3.12 和全部依赖装进
+     `runtime/`（不建 venv，整个文件夹可以移动；不写注册表、不进 PATH、不碰系统里的 Python）。uv 的下载缓存在装好后才删，
+     暂停或失败后再装会跳过已经下载的包。装好后 `Bapu.exe` 启动 Python 服务，接着下载模型。日志在 `data/logs/`。
+  2. 模型下载支持断点续传和多线程：大文件按“下载线程”数（1–16，默认 8，在“环境”页改）分成几段同时下，
+     每段的进度记在 `<文件>.part.json`，暂停、关掉 Bapu 或断网后从断点接着下；服务器不支持分段时退回单线程续传。
+     下完照样核对 SHA-256。uv 同时下载的包数也用这个设置。
+  下载源：装运行环境时可以选“自动 / 官方源 / 国内镜像”（自动会测速）。国内镜像用阿里云 PyPI 和 PyTorch、npmmirror（Python）、
+  hf-mirror（HuggingFace）和 ghfast.top（GitHub 加速），见 `src/bapu/mirrors.json`；模型下载和更新也跟着这个设置，
+  在“环境”页可以改。不管从哪里下载都按 SHA-256 校验，镜像只决定从哪里取文件。MMS 对齐模型没有国内镜像。
+- 更新：“环境”页的清单里有 Bapu 本身（每天自动检查一次，侧栏会提示新版本）。只下载程序部分（约 20 MB），关闭 Bapu 时由 `Bapu.exe` 校验签名后替换
+  `Bapu.exe`、`app/`、`tools/`；`runtime/`、`models/`、`data/` 不动。新版本的依赖有变化时，下次启动只补装变了的包。
+  发布新版本：`uv run python scripts/release.py --notes "…" --publish`（GitHub 发布页，附 `latest.json` 和 Ed25519 签名；
+  签名私钥在 `~/.bapu/release-signing-key`，不进仓库，公钥内置在 `desktop/src-tauri/src/updater.rs`）。
   程序文件夹要放在有写入权限的位置（不要放 C:\Program Files）。重新运行构建脚本只替换 `app/`、`tools/` 和 `Bapu.exe`，
   `runtime/`、`models/`、`data/` 保留。
 - 桌面窗口（Tauri，`desktop/`）开发：`cd desktop && npm install && npm run build`，生成

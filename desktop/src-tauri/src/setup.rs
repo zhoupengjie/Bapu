@@ -8,7 +8,9 @@
 //!
 //! Packages go straight into that Python (no venv: a venv records absolute
 //! paths, and the whole program folder should be movable). uv's download cache
-//! lives in `runtime\.uv-cache` while installing and is removed afterwards.
+//! lives in `runtime\.uv-cache` while installing and is removed only once the
+//! install succeeded: a paused or failed install keeps what it downloaded, and
+//! the next attempt skips those packages.
 
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -24,9 +26,16 @@ use tauri::{AppHandle, Emitter};
 static RUNNING: AtomicBool = AtomicBool::new(false);
 static CANCELLED: AtomicBool = AtomicBool::new(false);
 static CHILD: Mutex<Option<Child>> = Mutex::new(None);
+static PAUSED: AtomicBool = AtomicBool::new(false);
 
 pub fn running() -> bool {
     RUNNING.load(Ordering::SeqCst)
+}
+
+/// Stop the install to continue later (the 环境 page's 暂停): like cancel, reported as paused.
+pub fn pause() {
+    PAUSED.store(true, Ordering::SeqCst);
+    cancel();
 }
 
 pub fn cancel() {
@@ -149,7 +158,43 @@ pub fn info(home: &Path) -> Value {
         "amd": has_amd,
         "variants": variants,
         "recommended": recommended,
+        "sources": mirrors(home).map(|m| json!({
+            "official": { "label": m["official"]["label"], "detail": m["official"]["detail"] },
+            "china": { "label": m["china"]["label"], "detail": m["china"]["detail"] },
+        })).unwrap_or(json!({})),
+        "settings": fs::read(home.join("data").join("settings.json")).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()),
+        "previous": read_ready(home),
+        "models": models(home),
+        "threads": threads(home),
+        // a paused or failed install left packages in uv's cache: the next one skips them
+        "partial": runtime(home).join(".uv-cache").is_dir() && !ready(home),
     })
+}
+
+/// The models in the bundled registry (id, stage, name, bytes), so the 环境 page can
+/// list them before the Python service runs.
+fn models(home: &Path) -> Value {
+    let p = home.join("app").join("src").join("bapu").join("models").join("registry.toml");
+    let Some(t) = fs::read_to_string(&p).ok().and_then(|s| s.parse::<toml::Table>().ok()) else { return json!([]) };
+    let list = t.get("model").and_then(|m| m.as_array()).cloned().unwrap_or_default();
+    Value::Array(list.iter().map(|m| {
+        let files = m.get("files").and_then(|f| f.as_array()).cloned().unwrap_or_default();
+        let size = m.get("archive").and_then(|a| a.get("size")).and_then(|s| s.as_integer())
+            .unwrap_or_else(|| files.iter().filter_map(|f| f.get("size").and_then(|s| s.as_integer())).sum());
+        let s = |k: &str| m.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let lic = |k: &str| m.get("license").and_then(|l| l.get(k)).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        json!({ "id": s("id"), "stage": s("stage"), "name": s("name"), "size": size, "builtin": files.is_empty(),
+                "license": { "name": lic("name"), "url": lic("url"), "commercial": lic("commercial") } })
+    }).collect())
+}
+
+/// Parallel downloads (the 环境 page's 下载线程), shared with the Python side.
+fn threads(home: &Path) -> u64 {
+    fs::read(home.join("data").join("settings.json")).ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .and_then(|s| s["threads"].as_u64())
+        .unwrap_or(8)
+        .clamp(1, 16)
 }
 
 struct Ctx {
@@ -179,6 +224,7 @@ impl Ctx {
             .env("UV_NO_CONFIG", "1")
             .env("UV_LINK_MODE", "copy")
             .env("NO_COLOR", "1")
+            .env("UV_CONCURRENT_DOWNLOADS", threads(&self.home).to_string())
             .current_dir(&self.home);
         c
     }
@@ -219,15 +265,98 @@ impl Ctx {
     }
 }
 
-fn steps(ctx: &Ctx, variant: &str) -> Result<Value, String> {
+fn mirrors(home: &Path) -> Result<Value, String> {
+    let p = home.join("app").join("src").join("bapu").join("mirrors.json");
+    let text = fs::read_to_string(&p).map_err(|e| format!("读不了 {}：{e}", p.display()))?;
+    serde_json::from_str(&text).map_err(|e| format!("{} 格式不对：{e}", p.display()))
+}
+
+fn sha256_file(p: &Path) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let data = fs::read(p).ok()?;
+    Some(format!("{:x}", Sha256::digest(&data)))
+}
+
+fn read_ready(home: &Path) -> Option<Value> {
+    serde_json::from_slice(&fs::read(runtime(home).join("ready.json")).ok()?).ok()
+}
+
+/// After an update: the package list or the PyTorch pins changed since the runtime was set up.
+pub fn needs_sync(home: &Path) -> bool {
+    let Some(ready) = read_ready(home) else { return false };
+    let req = sha256_file(&home.join("app").join("requirements.txt"));
+    let pins = torch_spec(home).ok().map(|s| s["packages"].clone());
+    let pins_changed = ready.get("torch").is_some() && pins.as_ref() != Some(&ready["torch"]);
+    req.is_some() && (ready["requirements_sha"].as_str() != req.as_deref() || pins_changed)
+}
+
+/// The settings file the Python side reads (download source etc.).
+pub fn save_settings(home: &Path, changes: Value) {
+    let p = home.join("data").join("settings.json");
+    let mut s: Value = fs::read(&p).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(json!({}));
+    if let (Some(obj), Some(ch)) = (s.as_object_mut(), changes.as_object()) {
+        for (k, v) in ch {
+            obj.insert(k.clone(), v.clone());
+        }
+    }
+    let _ = fs::create_dir_all(p.parent().unwrap());
+    let _ = fs::write(&p, serde_json::to_vec_pretty(&s).unwrap());
+}
+
+/// Bytes per second for the first 512 KB of `url` (None: unreachable).
+fn speed(url: &str) -> Option<f64> {
+    let t = std::time::Instant::now();
+    let r = ureq::get(url).set("Range", "bytes=0-524287").timeout(std::time::Duration::from_secs(8)).call().ok()?;
+    let mut buf = Vec::new();
+    use std::io::Read;
+    r.into_reader().take(524_288).read_to_end(&mut buf).ok()?;
+    let dt = t.elapsed().as_secs_f64().max(1e-3);
+    (!buf.is_empty()).then(|| buf.len() as f64 / dt)
+}
+
+/// Official servers vs China mirrors: which is faster from here.
+pub fn probe(home: &Path) -> Value {
+    let m = mirrors(home).unwrap_or(json!({}));
+    let (o, c) = thread::scope(|s| {
+        let a = s.spawn(|| speed(m["probe"]["official"].as_str().unwrap_or_default()));
+        let b = s.spawn(|| speed(m["probe"]["china"].as_str().unwrap_or_default()));
+        (a.join().ok().flatten(), b.join().ok().flatten())
+    });
+    let best = match (o, c) {
+        (_, Some(c)) if o.map_or(true, |o| c > o * 1.2) => "china",
+        _ => "official",
+    };
+    json!({ "official": o, "china": c, "best": best })
+}
+
+fn steps(ctx: &Ctx, variant: &str, source: &str, sync: bool) -> Result<Value, String> {
     let home = &ctx.home;
     let spec = torch_spec(home)?;
+    let mirror = mirrors(home)?;
+    let src = mirror.get(source).ok_or_else(|| format!("没有这种下载源：{source}"))?;
     let v = spec["variants"].get(variant).ok_or_else(|| format!("没有这种安装方式：{variant}"))?;
     let py_version = spec["python"].as_str().unwrap_or("3.12");
+    let before = read_ready(home);
+    // a runtime set up before ready.json recorded the pins came from the same pins: leave torch alone
+    let torch_changed = !sync || before.as_ref().map_or(true, |b| {
+        (b.get("torch").is_some() && b["torch"] != spec["packages"]) || b["variant"].as_str() != Some(variant)
+    });
     let total = 4;
+    let uv = || {
+        let mut c = ctx.uv();
+        if let Some(m) = src["python"].as_str() {
+            c.env("UV_PYTHON_INSTALL_MIRROR", m);
+        }
+        c
+    };
+    ctx.line(&format!("== 下载源：{}", src["label"].as_str().unwrap_or(source)));
 
     ctx.step(1, total, &format!("安装 Python {py_version}"));
-    ctx.run(ctx.uv().args(["python", "install", py_version, "--no-bin", "--no-registry"]))?;
+    if sync && runtime_python(home).is_some() {
+        ctx.line("Python 已经装好，跳过");
+    } else {
+        ctx.run(uv().args(["python", "install", py_version, "--no-bin", "--no-registry"]))?;
+    }
     // uv also makes `cpython-3.12-…`, a link to the patch release by absolute path; it would
     // dangle once the program folder moves, and Bapu does not need it
     if let Ok(entries) = fs::read_dir(runtime(home)) {
@@ -240,24 +369,32 @@ fn steps(ctx: &Ctx, variant: &str) -> Result<Value, String> {
     }
     let py = runtime_python(home).ok_or("Python 装好了却找不到 python.exe")?;
     let py_s = py.display().to_string();
+    let pypi = src["pypi"].as_str().unwrap_or("https://pypi.org/simple");
 
-    ctx.step(2, total, "安装 Bapu 用到的包");
+    ctx.step(2, total, if sync { "更新 Bapu 用到的包" } else { "安装 Bapu 用到的包" });
     let req = home.join("app").join("requirements.txt");
-    ctx.run(ctx.uv().args(["pip", "install", "--python", &py_s, "--break-system-packages", "--no-deps", "-r"]).arg(&req))?;
+    ctx.run(uv().args(["pip", "install", "--python", &py_s, "--break-system-packages", "--no-deps", "--index-url", pypi, "-r"]).arg(&req))?;
 
     ctx.step(3, total, &format!("安装 PyTorch（{}）", v["label"].as_str().unwrap_or(variant)));
-    let mut cmd = ctx.uv();
-    cmd.args(["pip", "install", "--python", &py_s, "--break-system-packages", "--reinstall-package", "torch"]);
-    for p in spec["packages"].as_array().cloned().unwrap_or_default() {
-        cmd.arg(p.as_str().unwrap_or_default());
-    }
-    cmd.args(["--index-url", v["index"].as_str().unwrap_or_default()]);
-    if v["deps"].as_bool().unwrap_or(false) {
-        cmd.args(["--extra-index-url", "https://pypi.org/simple", "--index-strategy", "unsafe-best-match"]);
+    if torch_changed {
+        let torch = &src["torch"];
+        let url = torch[variant].as_str().ok_or_else(|| format!("{source} 没有 {variant} 的 PyTorch"))?;
+        let mut cmd = uv();
+        cmd.args(["pip", "install", "--python", &py_s, "--break-system-packages", "--reinstall-package", "torch"]);
+        for p in spec["packages"].as_array().cloned().unwrap_or_default() {
+            cmd.arg(p.as_str().unwrap_or_default());
+        }
+        let deps = v["deps"].as_bool().unwrap_or(false);
+        match (torch["mode"].as_str(), deps) {
+            (Some("find-links"), false) => cmd.args(["--no-index", "--find-links", url, "--no-deps"]),
+            (Some("find-links"), true) => cmd.args(["--index-url", pypi, "--find-links", url]),
+            (_, false) => cmd.args(["--index-url", url, "--no-deps"]),
+            (_, true) => cmd.args(["--index-url", url, "--extra-index-url", pypi, "--index-strategy", "unsafe-best-match"]),
+        };
+        ctx.run(&mut cmd)?;
     } else {
-        cmd.arg("--no-deps");
+        ctx.line("PyTorch 版本没变，跳过");
     }
-    ctx.run(&mut cmd)?;
 
     ctx.step(4, total, "检查运行环境");
     let check = "import json, torch, bapu.cli\nfrom bapu.device import describe\nprint('BAPU_CHECK ' + json.dumps(describe()))";
@@ -267,20 +404,27 @@ fn steps(ctx: &Ctx, variant: &str) -> Result<Value, String> {
     let dev: Value = lines.iter().find_map(|l| l.strip_prefix("BAPU_CHECK ")).and_then(|j| serde_json::from_str(j).ok())
         .ok_or("检查没有返回结果")?;
     let ready = json!({
-        "variant": variant, "label": v["label"], "python": py_version, "device": dev,
-        "installed_at": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+        "variant": variant, "label": v["label"], "python": py_version, "device": dev, "source": source,
+        "torch": spec["packages"], "requirements_sha": sha256_file(&req),
+        "installed_at": before.as_ref().and_then(|b| b["installed_at"].as_u64())
+            .unwrap_or_else(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)),
     });
     fs::write(runtime(home).join("ready.json"), serde_json::to_vec_pretty(&ready).unwrap()).map_err(|e| e.to_string())?;
     let _ = fs::remove_dir_all(runtime(home).join(".uv-cache"));
     Ok(ready)
 }
 
-/// Install in the background; the page follows setup-step / setup-log / setup-done / setup-error.
-pub fn install(app: AppHandle, home: PathBuf, variant: String) -> Result<(), String> {
+/// Install (or, after an update, sync) in the background; the page follows
+/// setup-step / setup-log / setup-done / setup-error. `source` is official or
+/// china; `choice` is what the user picked (auto / official / china).
+pub fn install(app: AppHandle, home: PathBuf, variant: String, source: String, choice: String, measured: Value) -> Result<(), String> {
     if RUNNING.swap(true, Ordering::SeqCst) {
         return Err("已经在安装了".into());
     }
     CANCELLED.store(false, Ordering::SeqCst);
+    PAUSED.store(false, Ordering::SeqCst);
+    let sync = read_ready(&home).is_some();
+    save_settings(&home, json!({ "source": choice, "resolved": source, "measured": measured }));
     let log_path = home.join("data").join("logs").join("setup.log");
     let _ = fs::create_dir_all(log_path.parent().unwrap());
     let log = OpenOptions::new().create(true).append(true).open(&log_path).map_err(|e| {
@@ -289,7 +433,7 @@ pub fn install(app: AppHandle, home: PathBuf, variant: String) -> Result<(), Str
     })?;
     let ctx = Ctx { app: app.clone(), home, log: Arc::new(Mutex::new(log)) };
     thread::spawn(move || {
-        let result = steps(&ctx, &variant);
+        let result = steps(&ctx, &variant, &source, sync);
         RUNNING.store(false, Ordering::SeqCst);
         match result {
             Ok(ready) => {
@@ -297,9 +441,15 @@ pub fn install(app: AppHandle, home: PathBuf, variant: String) -> Result<(), Str
                 let _ = ctx.app.emit("setup-done", ready);
                 crate::start_once(&ctx.app);
             }
+            Err(_) if PAUSED.load(Ordering::SeqCst) => {
+                ctx.line("== 已暂停（下载过的包留在缓存里，继续时跳过）");
+                let _ = ctx.app.emit("setup-paused", ());
+                crate::set_status_failed_setup(&ctx.app);
+            }
             Err(e) => {
                 ctx.line(&format!("== 失败：{e}"));
                 let _ = ctx.app.emit("setup-error", json!({ "message": e, "log": log_path.display().to_string() }));
+                crate::set_status_failed_setup(&ctx.app);
             }
         }
     });

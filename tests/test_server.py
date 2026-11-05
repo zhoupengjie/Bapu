@@ -259,3 +259,45 @@ def test_load_reports_cpu_ram_and_gpu_when_there_is_one(env):
         assert 0 < d["ram"]["used"] <= d["ram"]["total"]
         if d["gpu"] is not None:  # NVIDIA driver present
             assert 0 <= d["gpu"]["util"] <= 100 and d["gpu"]["mem_used"] <= d["gpu"]["mem_total"]
+
+
+def test_only_the_desktop_ui_may_call_from_another_origin(env):
+    svc, _ = env()
+    with TestClient(create_app(svc)) as client:
+        ok = client.get("/api/system", headers={"Origin": "http://tauri.localhost"})
+        assert ok.headers.get("access-control-allow-origin") == "http://tauri.localhost"
+        other = client.get("/api/system", headers={"Origin": "https://evil.example"})
+        assert "access-control-allow-origin" not in other.headers
+
+
+def test_download_queue_and_thread_setting(env, tmp_path, monkeypatch):
+    monkeypatch.setenv("BAPU_DATA_DIR", str(tmp_path / "data"))
+    svc, _ = env()
+    from bapu.downloads import Downloads
+
+    svc.downloads = Downloads(svc.registry, ["algo", "net"])
+    with TestClient(create_app(svc)) as client:
+        d = client.get("/api/downloads").json()
+        assert [(i["id"], i["status"], i["done"]) for i in d["items"]] == [("algo", "builtin", 0), ("net", "missing", 0)]
+        assert d["threads"] == 8
+        assert client.put("/api/system/sources", json={"threads": 40}).json()["threads"] == 16
+        assert client.put("/api/system/sources", json={"threads": 3}).json()["threads"] == 3
+        assert client.post("/api/downloads/start", json={}).status_code == 200
+        end = time.time() + 5
+        while (d := client.get("/api/downloads").json())["state"] != "idle":
+            assert time.time() < end, d
+            time.sleep(0.05)
+        net = d["items"][1]
+        assert net["status"] == "ready" and net["done"] == net["size"] > 0
+        assert svc.registry.license_accepted(svc.registry.get("net"))
+
+
+def test_save_project_and_network_load(env):
+    svc, audio = env()
+    with TestClient(create_app(svc)) as client:
+        job = client.post("/api/jobs", data={"audio_path": str(audio)}).json()
+        r = client.post(f"/api/jobs/{job['id']}/save")
+        assert r.status_code == 200, r.text
+        assert client.get(f"/api/jobs/{job['id']}").json()["project_file"]
+        net = client.get("/api/system/load").json()["net"]
+        assert net["up"] >= 0 and net["down"] >= 0

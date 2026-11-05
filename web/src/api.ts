@@ -127,6 +127,12 @@ export type Review = {
   conflicting_corrections: { id: number; line: number; reason: string }[];
 };
 
+/** Where the API is: same origin (served by bapu serve), or the service the desktop window started. */
+let BASE = "";
+export function setApiBase(url: string) {
+  BASE = url.replace(/\/+$/, "");
+}
+
 export class ApiError extends Error {
   constructor(public status: number, message: string, public detail?: unknown) {
     super(message);
@@ -146,33 +152,36 @@ async function handle<T>(r: Response): Promise<T> {
 }
 
 export const api = {
-  get: <T>(path: string) => fetch(`/api${path}`).then((r) => handle<T>(r)),
+  get: <T>(path: string) => fetch(`${BASE}/api${path}`).then((r) => handle<T>(r)),
   post: <T>(path: string, body?: unknown) =>
-    fetch(`/api${path}`, {
+    fetch(`${BASE}/api${path}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body ?? {}),
     }).then((r) => handle<T>(r)),
   put: <T>(path: string, body: unknown) =>
-    fetch(`/api${path}`, {
+    fetch(`${BASE}/api${path}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }).then((r) => handle<T>(r)),
-  del: <T>(path: string) => fetch(`/api${path}`, { method: "DELETE" }).then((r) => handle<T>(r)),
+  del: <T>(path: string) => fetch(`${BASE}/api${path}`, { method: "DELETE" }).then((r) => handle<T>(r)),
   form: <T>(path: string, form: FormData) =>
-    fetch(`/api${path}`, { method: "POST", body: form }).then((r) => handle<T>(r)),
+    fetch(`${BASE}/api${path}`, { method: "POST", body: form }).then((r) => handle<T>(r)),
 };
 
 /** Follow a Server-Sent Events topic; returns a function that stops listening. */
 export function follow(path: string, onEvent: (ev: Record<string, unknown> & { type: string; seq: number }) => void) {
-  const es = new EventSource(`/api${path}`);
+  const es = new EventSource(`${BASE}/api${path}`);
   const handler = (e: MessageEvent) => onEvent(JSON.parse(e.data));
   for (const t of ["state", "progress", "message"]) es.addEventListener(t, handler as EventListener);
   return () => es.close();
 }
 
-export const audioUrl = (job: string, stem: string) => `/api/jobs/${encodeURIComponent(job)}/audio/${stem}`;
+export const audioUrl = (job: string, stem: string) => `${BASE}/api/jobs/${encodeURIComponent(job)}/audio/${stem}`;
+
+/** Full URL of an API path (for links and downloads). */
+export const apiUrl = (path: string) => `${BASE}/api${path}`;
 
 export function fmtSize(n: number | null | undefined): string {
   if (n == null) return "—";

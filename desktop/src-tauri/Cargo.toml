@@ -1,6 +1,6 @@
 [package]
 name = "bapu-desktop"
-version = "0.1.0"
+version = "0.2.0"
 description = "Bapu desktop shell: starts the local Python service and shows the web UI in a window"
 edition = "2021"
 publish = false
@@ -14,7 +14,12 @@ tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
 serde_json = "1"
-ureq = { version = "2", default-features = false, features = ["json"] }
+ureq = { version = "2", default-features = false, features = ["json", "tls"] }
+sha2 = "0.10"
+ed25519-dalek = "2"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+toml = "0.8"
+sysinfo = { version = "0.40.1", default-features = false, features = ["system", "network"] }
 
 [profile.release]
 codegen-units = 1

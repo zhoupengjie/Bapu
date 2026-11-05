@@ -9,6 +9,7 @@ type TauriGlobal = {
   };
   opener: { openUrl(url: string): Promise<void>; revealItemInDir(path: string): Promise<void> };
   event: { listen<T>(name: string, cb: (e: { payload: T }) => void): Promise<() => void> };
+  core: { invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> };
 };
 
 const tauri = (): TauriGlobal | null => (window as unknown as { __TAURI__?: TauriGlobal }).__TAURI__ ?? null;
@@ -65,4 +66,32 @@ export function routeExternalLinks() {
       t.opener.openUrl(url.href).catch(() => {});
     }
   });
+}
+
+/** The Python service the desktop window runs (or why it is not running yet). */
+export type Service = {
+  state: "no_runtime" | "needs_sync" | "installing" | "starting" | "ready" | "failed";
+  error: string | null;
+  port: number;
+  portable: boolean;
+  log: string;
+  setup_running: boolean;
+};
+
+export const invoke = <T,>(cmd: string, args?: Record<string, unknown>) => {
+  const t = tauri();
+  return t ? t.core.invoke<T>(cmd, args) : Promise.reject(new Error("不在 Bapu 桌面窗口里"));
+};
+
+/** Subscribe to a desktop-shell event; returns an unsubscribe function. */
+export function onDesktopEvent<T>(name: string, cb: (payload: T) => void): () => void {
+  const t = tauri();
+  if (!t?.event) return () => {};
+  let stop: (() => void) | null = null;
+  let gone = false;
+  t.event.listen<T>(name, (e) => cb(e.payload)).then((u) => (gone ? u() : (stop = u))).catch(() => {});
+  return () => {
+    gone = true;
+    stop?.();
+  };
 }

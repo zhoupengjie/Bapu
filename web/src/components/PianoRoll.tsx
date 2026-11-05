@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Kind, ScoreLine } from "../api";
+import { useThemeVersion } from "../theme";
 
 const NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 export const pitchName = (p: number) => `${NAMES[((p % 12) + 12) % 12]}${Math.floor(p / 12) - 1}`;
@@ -27,6 +28,8 @@ type Props = {
   beatsPerBar?: number;
   height?: number;
   rowHeight?: number;
+  /** View only: left-drag pans, a click on a note highlights it, no box selection. */
+  readOnly?: boolean;
 };
 
 const KEYS = 44; // keyboard column
@@ -40,16 +43,18 @@ function cssVar(el: Element, name: string) {
 }
 
 type Drag =
-  | { mode: "pan"; x: number; y: number; t0: number; pTop: number }
+  | { mode: "pan"; x: number; y: number; t0: number; pTop: number; hit?: number | null; moved?: boolean }
   | { mode: "scrub" }
   | { mode: "box"; x0: number; y0: number; x1: number; y1: number; add: boolean };
 
 /** Piano roll with SV-style navigation: left-drag selects a box, middle-drag pans,
- *  the wheel scrolls (Shift: sideways, Ctrl: zoom time), the ruler moves the playhead. */
+ *  the wheel scrolls (Shift: sideways, Ctrl: zoom time), the ruler moves the playhead.
+ *  With `readOnly`, left-drag pans too and a click on a note only highlights it. */
 export default function PianoRoll({
   notes, lines, t0, span, duration, playhead, selected, primary, onSelect, onSeek, onView, label,
-  kindOverride = {}, cuts = [], flagged, bpm, beatsPerBar = 4, height = 360, rowHeight = 14,
+  kindOverride = {}, cuts = [], flagged, bpm, beatsPerBar = 4, height = 360, rowHeight = 14, readOnly = false,
 }: Props) {
+  const themeV = useThemeVersion(); // colours come from CSS vars: redraw when light / dark changes
   const wrap = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const [width, setWidth] = useState(800);
@@ -173,7 +178,7 @@ export default function PianoRoll({
       g.roundRect(nx, ny, nw, nh, 3);
       g.fill();
       if (warn || kindOverride[n.index]) {
-        g.strokeStyle = warn ? "#e0913c" : v("--accent");
+        g.strokeStyle = warn ? v("--warn") : v("--accent");
         g.setLineDash([3, 2]);
         g.lineWidth = 2;
         g.strokeRect(nx - 1, ny - 1, nw + 2, nh + 2);
@@ -185,7 +190,7 @@ export default function PianoRoll({
         g.strokeRect(nx - 2, ny - 2, nw + 4, nh + 4);
       }
       const text = (warn ? "⚠" : "") + (kind === "sustain" ? "-" : kind === "cont" ? "+" : n.lyric);
-      g.fillStyle = kind === "sustain" ? "#3d2a0a" : "#fff";
+      g.fillStyle = kind === "sustain" ? "#3d2a0a" : v("--note-ink") || "#fff";
       g.font = `${Math.min(12, nh - 2)}px system-ui, sans-serif`;
       g.save();
       g.beginPath();
@@ -245,11 +250,11 @@ export default function PianoRoll({
       const a = ln.t0 ?? ln.start, b = ln.t1 ?? ln.end;
       if (a == null || b == null || b < t0 || a > t1) continue;
       if (ln.attention) {
-        g.fillStyle = "#e0913c";
+        g.fillStyle = v("--warn");
         g.fillRect(x(a), TOP - 4, x(b) - x(a), 3);
       }
       g.fillStyle = ln.attention ? v("--warn") : v("--muted");
-      g.fillText(`L${String(ln.line).padStart(2, "0")}${ln.version === "manual" ? " 人工" : ""}`, Math.max(KEYS + 2, x(a) + 3), RULER + 12);
+      g.fillText(`第${ln.line}句`, Math.max(KEYS + 2, x(a) + 3), RULER + 12);
     }
     g.restore();
 
@@ -279,7 +284,7 @@ export default function PianoRoll({
     // playhead
     if (playhead >= t0 && playhead <= t1) {
       const px = Math.round(x(playhead));
-      g.fillStyle = "#c2410c";
+      g.fillStyle = v("--playhead");
       g.fillRect(px - 1, 0, 2, height);
       g.beginPath();
       g.moveTo(px - 6, 0);
@@ -287,7 +292,7 @@ export default function PianoRoll({
       g.lineTo(px, 8);
       g.fill();
     }
-  }, [notes, lines, t0, span, playhead, selected, primary, kindOverride, cuts, flagged, width, height, top, drag, bpm, beatsPerBar]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [notes, lines, t0, span, playhead, selected, primary, kindOverride, cuts, flagged, width, height, top, drag, bpm, beatsPerBar, themeV]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- wheel: scroll (Shift: sideways), Ctrl: zoom time around the pointer ---------------
   const view = useRef({ t0, span, top, duration, width });
@@ -319,6 +324,7 @@ export default function PianoRoll({
   }); // re-attached each render so it sees the current limits
 
   // ---- mouse: left = select (box on empty space), middle = pan, ruler = playhead --------
+  // (readOnly: left = pan, a click without moving on a note highlights it)
   function point(e: React.PointerEvent<HTMLCanvasElement>) {
     const r = e.currentTarget.getBoundingClientRect();
     return [e.clientX - r.left, e.clientY - r.top] as const;
@@ -340,6 +346,10 @@ export default function PianoRoll({
       setDrag({ mode: "scrub" });
       return;
     }
+    if (readOnly) {
+      setDrag({ mode: "pan", x: px, y: py, t0, pTop: top, hit: noteAt(px, py)?.index ?? null, moved: false });
+      return;
+    }
     const add = e.ctrlKey || e.metaKey || e.shiftKey;
     const hit = noteAt(px, py);
     if (hit) {
@@ -359,10 +369,14 @@ export default function PianoRoll({
     const [px, py] = point(e);
     const c = e.currentTarget;
     if (!drag) {
-      c.style.cursor = px >= KEYS && py < TOP ? "pointer" : noteAt(px, py) ? "default" : "crosshair";
+      c.style.cursor = px >= KEYS && py < TOP ? "pointer" : readOnly ? (noteAt(px, py) ? "pointer" : px >= KEYS ? "grab" : "default")
+        : noteAt(px, py) ? "default" : "crosshair";
       return;
     }
     if (drag.mode === "pan") {
+      const moved = drag.moved || Math.abs(px - drag.x) > 3 || Math.abs(py - drag.y) > 3;
+      if (moved !== drag.moved) setDrag({ ...drag, moved });
+      if (!moved) return;
       c.style.cursor = "grabbing";
       const nt0 = clampT0(drag.t0 - (px - drag.x) / pxPerSec);
       setPTop(clampTop(drag.pTop + (py - drag.y) / rowH));
@@ -378,6 +392,7 @@ export default function PianoRoll({
     const d = drag;
     setDrag(null);
     e.currentTarget.style.cursor = "";
+    if (d?.mode === "pan" && !d.moved && d.hit != null) onSelect([d.hit], d.hit);
     if (d?.mode !== "box") return;
     const [bx0, bx1] = [Math.min(d.x0, d.x1), Math.max(d.x0, d.x1)];
     const [by0, by1] = [Math.min(d.y0, d.y1), Math.max(d.y0, d.y1)];
@@ -398,7 +413,7 @@ export default function PianoRoll({
       <canvas ref={canvas} tabIndex={0} style={{ width, height, display: "block", outline: "none", touchAction: "none" }}
         onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={() => setDrag(null)}
         onAuxClick={(e) => e.preventDefault()} onContextMenu={(e) => e.preventDefault()}
-        onKeyDown={(e) => { if (e.key === "Escape") onSelect([], null); }}
+        onKeyDown={(e) => { if (e.key === "Escape" && !readOnly) onSelect([], null); }}
         role="img" aria-label={`${label}：${t0.toFixed(1)}–${t1.toFixed(1)} 秒，${visible.length} 个音符，已选 ${selected.size} 个`} />
     </div>
   );

@@ -1,15 +1,20 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
-import { api, fmtSize, type JobDetail, type JobSummary, type Model, type StageInfo, type SystemInfo } from "./api";
-import { AudioStep, LangStep, LyricsStep } from "./pages/SetupSteps";
-import { EnvStep } from "./pages/EnvStep";
-import { isMissing, neededModels } from "./components/Models";
+import { api, type JobDetail, type JobSummary } from "./api";
+import { inDesktop, invoke, onDesktopEvent, desktopPick, type Service } from "./desktop";
+import { useEnvState, type EnvState } from "./env";
+import { Icon } from "./icons";
+import { THEMES, getTheme, setTheme, type Theme } from "./theme";
+import LoadPanel from "./components/LoadPanel";
+import EnvPage from "./pages/EnvPage";
+import ImportPage from "./pages/ImportPage";
 import RunPage from "./pages/RunPage";
-import ReviewPage from "./pages/ReviewPage";
+import CheckPage from "./pages/CheckPage";
 import ExportPage from "./pages/ExportPage";
 
-/** One song at a time: the steps of the flow are the routes (#/audio … #/export). */
-export type Step = "env" | "audio" | "lyrics" | "lang" | "run" | "review" | "export";
-const STEP_ORDER: Step[] = ["env", "audio", "lyrics", "lang", "run", "review", "export"];
+/** One song at a time: the steps of the flow are the routes (#/env … #/export). */
+export type Step = "env" | "import" | "run" | "check" | "export";
+const STEP_ORDER: Step[] = ["env", "import", "run", "check", "export"];
+const TITLE: Record<Step, string> = { env: "环境", import: "导入", run: "自动处理", check: "检查", export: "导出" };
 
 export const go = (step: Step) => {
   window.location.hash = `/${step}`;
@@ -30,11 +35,13 @@ function useStep(): Step | null {
 }
 
 type Ctx = {
-  job: JobDetail | null; refresh: () => Promise<JobDetail | null>; open: (id: string | null) => void;
-  envReady: boolean | null; refreshEnv: () => void; // every model the pipeline needs is on disk
+  job: JobDetail | null; // the project on screen (null: none yet)
+  refresh: () => Promise<JobDetail | null>;
+  open: (id: string | null) => void; // show another project (null: start a new one)
+  env: EnvState; // runtime, models, updates (see env.ts)
 };
-const JobContext = createContext<Ctx>({ job: null, refresh: async () => null, open: () => {}, envReady: null, refreshEnv: () => {} });
-export const useJob = () => useContext(JobContext);
+const JobContext = createContext<Ctx | null>(null);
+export const useJob = () => useContext(JobContext)!;
 
 const KEY = "bapu.job";
 function remembered(): string | null {
@@ -56,130 +63,137 @@ function remember(id: string | null) {
 export const started = (job: JobDetail) =>
   job.state === "running" || job.state === "queued" || job.stages.some((s) => s.state !== "missing");
 
-type StepView = { step: Step; title: string; status: string; state: "done" | "now" | "warn" | "todo" | "locked" };
+type StepView = { step: Step; status: string; state: "done" | "now" | "warn" | "todo" | "locked" };
 
-function steps(job: JobDetail | null, envReady: boolean | null): StepView[] {
-  const env: StepView = envReady === false
-    ? { step: "env", title: "环境", status: "要下载模型", state: "warn" }
-    : { step: "env", title: "环境", status: envReady ? "已就绪" : "", state: envReady ? "done" : "todo" };
-  return [env, ...projectSteps(job, envReady !== false)];
-}
-
-function projectSteps(job: JobDetail | null, envOk: boolean): StepView[] {
-  const LANG: Record<string, string> = { yue: "粤语", zh: "普通话", en: "英语" };
+function steps(job: JobDetail | null, env: EnvState): StepView[] {
+  const envView: StepView = env.busy
+    ? { step: "env", status: env.runtime.state === "starting" ? "启动中" : "下载中", state: "now" }
+    : env.paused
+      ? { step: "env", status: "已暂停", state: "warn" }
+      : env.ready
+        ? { step: "env", status: env.updateAvailable ? "有更新" : "", state: "done" }
+        : { step: "env", status: env.runtimeMissing || env.missingModels ? `缺 ${env.missingModels + (env.runtimeMissing ? 1 : 0)} 项` : "", state: "warn" };
   if (!job) {
-    return [
-      { step: "audio", title: "原曲", status: "导入录音", state: envOk ? "todo" : "locked" },
-      { step: "lyrics", title: "参考歌词", status: "可选", state: "locked" },
-      { step: "lang", title: "语言", status: "", state: "locked" },
-      { step: "run", title: "自动处理", status: "", state: "locked" },
-      { step: "review", title: "审查", status: "", state: "locked" },
-      { step: "export", title: "导出", status: "", state: "locked" },
-    ];
+    return [envView,
+      { step: "import", status: "", state: env.ready ? "todo" : "locked" },
+      { step: "run", status: "", state: "locked" },
+      { step: "check", status: "", state: "locked" },
+      { step: "export", status: "", state: "locked" }];
   }
-  const go_ = started(job);
   const total = job.stages.length || 9;
   const fresh = job.stages.filter((s) => s.state === "fresh").length;
-  const langs = (job.params?.lyrics?.langs as string[] | undefined) ?? ["yue", "en"];
   let run: StepView;
-  if (job.state === "queued") run = { step: "run", title: "自动处理", status: "排队中", state: "now" };
+  if (job.state === "queued") run = { step: "run", status: "排队中", state: "now" };
   else if (job.state === "running") {
     const st = job.stages.find((s) => s.stage === job.stage);
-    run = { step: "run", title: "自动处理", status: st ? `第 ${st.index}/${total} 步` : "处理中", state: "now" };
-  } else if (job.state === "failed") run = { step: "run", title: "自动处理", status: "出错了", state: "warn" };
-  else if (fresh === total && job.stages.length) run = { step: "run", title: "自动处理", status: "已完成", state: "done" };
-  else if (go_) run = { step: "run", title: "自动处理", status: `完成 ${fresh}/${total} 步`, state: "warn" };
-  else run = { step: "run", title: "自动处理", status: "", state: "todo" };
+    const pct = st ? Math.round(((st.index - 1 + (job.fraction ?? 0)) / total) * 100) : 0;
+    run = { step: "run", status: `${pct}%`, state: "now" };
+  } else if (job.state === "failed") run = { step: "run", status: "出错了", state: "warn" };
+  else if (fresh === total && job.stages.length) run = { step: "run", status: "", state: "done" };
+  else if (started(job)) run = { step: "run", status: `${fresh}/${total}`, state: "warn" };
+  else run = { step: "run", status: "", state: "todo" };
   return [
-    { step: "audio", title: "原曲", status: "已导入", state: "done" },
-    { step: "lyrics", title: "参考歌词", status: job.has_lyrics ? "已导入" : go_ ? "没有" : "可选", state: job.has_lyrics || go_ ? "done" : "todo" },
-    { step: "lang", title: "语言", status: go_ ? langs.map((l) => LANG[l] ?? l).join("、") : "", state: go_ ? "done" : "todo" },
+    envView,
+    { step: "import", status: "", state: started(job) ? "done" : "todo" },
     run,
     !job.has_score
-      ? { step: "review", title: "审查", status: "", state: "locked" }
+      ? { step: "check", status: "", state: "locked" }
       : job.attention
-        ? { step: "review", title: "审查", status: `${job.attention} 处待确认`, state: "warn" }
-        : { step: "review", title: "审查", status: "都确认了", state: "done" },
+        ? { step: "check", status: String(job.attention), state: "warn" }
+        : { step: "check", status: "", state: "done" },
     !job.has_score
-      ? { step: "export", title: "导出", status: "", state: "locked" }
-      : job.exported_at
-        ? job.export_stale
-          ? { step: "export", title: "导出", status: "改过，要重新导出", state: "warn" }
-          : { step: "export", title: "导出", status: "已导出", state: "done" }
-        : { step: "export", title: "导出", status: "", state: "todo" },
+      ? { step: "export", status: "", state: "locked" }
+      : job.exported_at && !job.export_stale
+        ? { step: "export", status: "", state: "done" }
+        : { step: "export", status: "", state: "todo" },
   ];
 }
 
-function Stepper({ job, envReady, current }: { job: JobDetail | null; envReady: boolean | null; current: Step }) {
+function ThemeButton() {
+  const [t, setT] = useState<Theme>(getTheme());
+  const i = THEMES.findIndex((x) => x.id === t);
+  const label = `外观：${THEMES[i].label}`;
   return (
-    <nav className="flow" aria-label="步骤">
-      {steps(job, envReady).map((s, i) => {
-        const on = s.step === current;
-        const inner = (
-          <>
-            <span className={`dot ${s.state}`} aria-hidden="true">
-              {s.state === "now" ? <span className="spin" /> : s.state === "done" ? "✓" : s.state === "warn" ? "!" : i + 1}
-            </span>
-            <span className="txt"><b>{s.title}</b>{s.status && <span className="small">{s.status}</span>}</span>
-          </>
-        );
-        return s.state === "locked"
-          ? <span key={s.step} className="step locked" aria-disabled="true">{inner}</span>
-          : <a key={s.step} href={`#/${s.step}`} className={`step ${on ? "on" : ""}`} aria-current={on ? "step" : undefined}>{inner}</a>;
-      })}
-    </nav>
+    <button type="button" className="icon-btn" title={label} aria-label={label}
+      onClick={() => { const n = THEMES[(i + 1) % THEMES.length].id; setT(n); setTheme(n); }}>
+      <Icon name={t} size={16} />
+    </button>
   );
 }
 
-function Header({ job, onNew }: { job: JobDetail | null; onNew: () => void }) {
-  const [sys, setSys] = useState<SystemInfo | null>(null);
-  useEffect(() => {
-    const load = () => api.get<SystemInfo>("/system").then(setSys).catch(() => setSys(null));
-    load();
-    const t = setInterval(load, 10000);
-    return () => clearInterval(t);
-  }, []);
+function Sidebar({ job, env, current, onNew, onOpen, onSave, saved, open, onClose }: {
+  job: JobDetail | null; env: EnvState; current: Step; onNew: () => void; onOpen: () => void; onSave: () => void;
+  saved: boolean; open: boolean; onClose: () => void;
+}) {
+  const list = steps(job, env);
   return (
-    <header className="top">
-      <span className="brand"><b>Bapu</b><span className="small" style={{ color: "var(--header-ink)" }}>扒谱</span></span>
-      {job && <span className="song" title={job.name}>{job.name}</span>}
-      <div className="sys">
-        {sys?.gpu
-          ? <span>{sys.gpu.name.replace("NVIDIA GeForce ", "")} · 显存 <span className="mono">{fmtSize(sys.gpu.total - sys.gpu.free)} / {fmtSize(sys.gpu.total)}</span></span>
-          : <span>{sys ? "没有可用的显卡" : "连不上本机服务（bapu serve）"}</span>}
-        {job && <button type="button" className="btn small ghost" onClick={onNew}>新建 / 打开</button>}
-      </div>
-    </header>
+    <>
+      <aside className="side" aria-label="导航">
+        <div className="brand">
+          <span className="logo" aria-hidden="true"><img src="/favicon.png" alt="" width="28" height="28" style={{ borderRadius: 8 }} /></span>
+          Bapu
+          <ThemeButton />
+        </div>
+        <button type="button" className={`nav ${env.ready ? "" : "off"}`} onClick={onNew} aria-disabled={!env.ready}>
+          <span className="ic"><Icon name="edit" /></span><span className="t">新建工程</span>
+        </button>
+        <button type="button" className={`nav ${env.apiUp ? "" : "off"}`} onClick={onOpen} aria-disabled={!env.apiUp}>
+          <span className="ic"><Icon name="folder" /></span><span className="t">打开工程…</span>
+        </button>
+        <button type="button" className={`nav ${job ? "" : "off"} ${saved ? "saved" : ""}`} onClick={onSave} aria-disabled={!job}
+          aria-label={saved ? "保存工程（已保存）" : "保存工程"}>
+          <span className="ic"><Icon name="save" /></span><span className="t">保存工程</span><small>Ctrl+S</small>
+        </button>
+
+        <nav className="steps" aria-label="步骤" style={{ marginTop: 12 }}>
+          {list.map((s, i) => {
+            const locked = s.state === "locked";
+            const on = s.step === current;
+            return (
+              <button key={s.step} type="button" className={`nav ${on ? "on" : ""} ${locked ? "off" : ""}`}
+                aria-disabled={locked} aria-current={on ? "page" : undefined}
+                onClick={() => { if (!locked) { go(s.step); onClose(); } }}>
+                <span className={`dot ${s.state === "locked" ? "todo" : s.state}`} aria-hidden="true">
+                  {s.state === "done" ? <Icon name="check" size={12} /> : s.state === "now" ? <span className="spin" style={{ width: 11, height: 11 }} /> : s.state === "warn" ? "!" : i + 1}
+                </span>
+                <span className="t">{TITLE[s.step]}</span>
+                {s.status && <small>{s.status}</small>}
+              </button>
+            );
+          })}
+        </nav>
+
+        <div className="side-foot">
+          {env.updateAvailable && (
+            <button type="button" className="nav upd" onClick={() => { go("env"); onClose(); }}>
+              <span className="ic"><Icon name="upd" /></span><span className="t">有新版本 {env.updateAvailable}</span>
+            </button>
+          )}
+          <div className="label">负载</div>
+          <LoadPanel apiUp={env.apiUp} />
+        </div>
+      </aside>
+      {open && <div className="scrim" onClick={onClose} />}
+    </>
   );
 }
 
-export default function App() {
+export default function App({ service = null }: { service?: Service | null }) {
   const routed = useStep();
+  const env = useEnvState(service);
   const [jobId, setJobId] = useState<string | null | undefined>(undefined); // undefined: still looking
   const [job, setJob] = useState<JobDetail | null>(null);
-  const [envReady, setEnvReady] = useState<boolean | null>(null);
-  const refreshEnv = useCallback(() => {
-    Promise.all([api.get<Model[]>("/models"), api.get<StageInfo[]>("/stages")])
-      .then(([m, s]) => setEnvReady(!neededModels(s, m).some(isMissing)))
-      .catch(() => setEnvReady(true)); // cannot tell: do not block the flow
-  }, []);
-  useEffect(refreshEnv, [refreshEnv]);
+  const [menu, setMenu] = useState(false);
+  const [saved, setSaved] = useState(false);
 
-  // the job to show: #/p/<id> (from "bapu open"), else the one opened last in this browser, else the newest one
+  // the project to show: the one opened last, else the newest one
   useEffect(() => {
-    const linked = window.location.hash.match(/^#\/p\/([^/]+)/)?.[1];
-    if (linked) {
-      const id = decodeURIComponent(linked);
-      remember(id);
-      window.history.replaceState(null, "", "#/");
-      setJobId(id);
-      return;
-    }
+    if (!env.apiUp) return;
     api.get<JobSummary[]>("/jobs").then((list) => {
       const mine = remembered();
       setJobId(mine === "" ? null : list.find((j) => j.id === mine)?.id ?? list[0]?.id ?? null);
     }).catch(() => setJobId(null));
-  }, []);
+  }, [env.apiUp]);
 
   const refresh = useCallback(async () => {
     if (!jobId) {
@@ -199,7 +213,7 @@ export default function App() {
     refresh();
   }, [refresh, routed]);
 
-  // keep the stepper current while the job is busy
+  // keep the sidebar current while the job is busy
   useEffect(() => {
     if (job?.state !== "running" && job?.state !== "queued") return;
     const t = setInterval(refresh, 2000);
@@ -212,46 +226,86 @@ export default function App() {
     setJobId(id);
   }, []);
 
-  // #/p/<id> while the page is already open: the desktop window opening another .bapu
+  const openPath = useCallback((path: string) =>
+    api.post<JobDetail>("/projects/open", { path }).then((d) => {
+      open(d.id);
+      window.location.hash = "/";
+    }).catch((e) => window.alert(`打不开这个工程\n\n${(e as Error).message}`)), [open]);
+
+  // a .bapu Bapu was launched with, double-clicked or dropped onto the window
   useEffect(() => {
-    const on = () => {
-      const linked = window.location.hash.match(/^#\/p\/([^/]+)/)?.[1];
-      if (!linked) return;
-      window.history.replaceState(null, "", "#/");
-      open(decodeURIComponent(linked));
+    if (!inDesktop() || !env.apiUp) return;
+    invoke<string | null>("take_launch_project").then((p) => { if (p) openPath(p); }).catch(() => {});
+    return onDesktopEvent<string>("open-project", openPath);
+  }, [env.apiUp, openPath]);
+
+  const onNew = () => {
+    if (!env.ready) return;
+    if (job?.state === "running" && !window.confirm("这个工程还在处理，离开后它会在后台继续跑完。确定吗？")) return;
+    open(null);
+    go("import");
+  };
+  const onOpen = async () => {
+    if (!env.apiUp) return;
+    try {
+      const local = await desktopPick("project");
+      const p = local === undefined ? (await api.post<{ path: string | null }>("/dialog", { kind: "project" })).path : local;
+      if (p) openPath(p);
+    } catch (e) {
+      window.alert((e as Error).message);
+    }
+  };
+  const onSave = useCallback(async () => {
+    if (!job) return;
+    try {
+      await api.post(`/jobs/${encodeURIComponent(job.id)}/save`);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1500);
+    } catch (e) {
+      window.alert((e as Error).message);
+    }
+  }, [job]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        onSave();
+      }
     };
-    window.addEventListener("hashchange", on);
-    return () => window.removeEventListener("hashchange", on);
-  }, [open]);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onSave]);
 
-  if (jobId === undefined || envReady === null) return <Header job={null} onNew={() => {}} />;
-  if (jobId && !job) return <Header job={null} onNew={() => {}} />;
+  const ctx: Ctx = { job, refresh, open, env };
+  const list = steps(job, env);
+  const loading = env.apiUp && (jobId === undefined || (jobId && !job));
 
-  // with no route, land where the song is: setup, processing or review
-  const step: Step = routed ?? (envReady === false ? "env" : !job ? "audio" : job.has_score && job.state !== "running" ? "review" : started(job) ? "run" : "lyrics");
-  const blocked = (s: Step) => steps(job, envReady).find((x) => x.step === s)?.state === "locked";
-  const shown: Step = blocked(step) ? (job ? "run" : envReady === false ? "env" : "audio") : step;
+  // with no route, land where the song is: environment, import, processing or check
+  const landing: Step = !env.ready ? "env" : !job ? "import" : job.has_score && job.state !== "running" ? "check" : started(job) ? "run" : "import";
+  const wanted: Step = routed ?? landing;
+  const shown: Step = list.find((x) => x.step === wanted)?.state === "locked" ? (env.ready ? (job ? "run" : "import") : "env") : wanted;
 
   let page;
-  if (shown === "env") page = <EnvStep />;
-  else if (shown === "audio") page = <AudioStep />;
-  else if (shown === "lyrics") page = <LyricsStep />;
-  else if (shown === "lang") page = <LangStep />;
+  if (loading) page = null;
+  else if (shown === "env") page = <EnvPage />;
+  else if (shown === "import") page = <ImportPage key={job?.id ?? "new"} />;
   else if (shown === "run") page = <RunPage />;
-  else if (shown === "review") page = <ReviewPage key={job!.id} id={job!.id} />;
+  else if (shown === "check") page = <CheckPage key={job!.id} id={job!.id} />;
   else page = <ExportPage key={job!.id} id={job!.id} />;
 
   return (
-    <JobContext.Provider value={{ job, refresh, open, envReady, refreshEnv }}>
-      <Header job={job} onNew={() => {
-        if (job?.state === "running" && !window.confirm("这个工程还在处理，离开后它会在后台继续跑完。确定吗？")) return;
-        open(null);
-        go("audio");
-      }} />
-      <main className="page">
-        <Stepper job={job} envReady={envReady} current={shown} />
-        {page}
-      </main>
+    <JobContext.Provider value={ctx}>
+      <div className={`shell ${menu ? "open" : ""}`}>
+        <Sidebar job={job} env={env} current={shown} onNew={onNew} onOpen={onOpen} onSave={onSave} saved={saved}
+          open={menu} onClose={() => setMenu(false)} />
+        <div style={{ minWidth: 0 }}>
+          <div className="mobilebar">
+            <button type="button" className="icon-btn" aria-label="打开导航" onClick={() => setMenu(true)}><Icon name="menu" /></button>
+            <b>{TITLE[shown]}</b>
+          </div>
+          <main>{page}</main>
+        </div>
+      </div>
     </JobContext.Provider>
   );
 }

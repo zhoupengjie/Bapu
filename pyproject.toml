@@ -1,6 +1,6 @@
 [project]
 name = "bapu"
-version = "0.0.1"
+version = "0.2.0"
 description = "扒谱: turn a song recording into a singable vocal score with lyrics (MIDI / SynthV project)."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
@@ -64,6 +64,7 @@ torchvision = { index = "pytorch-cu128" }
 
 [dependency-groups]
 dev = [
+    "cryptography>=44",
     "httpx>=0.28",
     "pytest>=9.2.0",
 ]
