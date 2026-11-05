@@ -18,6 +18,10 @@
   所以 `bapu` 分离这一步默认仍用 0.9，可以用 `--set separate.normalization_threshold=1.0` 改。
   用 0.9 时，`bapu` 的主唱干声和原型的输出逐位相同，转谱结果和原型的 MIDI 一一对应。
 - **坑**：audio-separator 0.48 的基础安装缺 `onnxruntime` 和 `audioread`。
+- **坑**：audio-separator 0.48 要求 PATH 里有 `ffmpeg` 程序：构造 `Separator` 时运行 `ffmpeg -version`，写 WAV 时
+  pydub 也调用 ffmpeg（传了 `-sample_fmt`）。没装 ffmpeg 的机器上“自动处理”第一步就报
+  `FileNotFoundError: [WinError 2]`；pytest 里它不报错（看到 `PYTEST_CURRENT_TEST` 就放过），所以测试一直没发现。
+  `bapu.backends.separator` 跳过这个检查，改用 soundfile 写分轨，采样和 pydub 写出的逐个相同（`tests/test_separator.py`）。
 
 ## 2. 主唱提取与去混响
 
