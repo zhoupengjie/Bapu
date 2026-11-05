@@ -37,16 +37,15 @@ export type Side = "in" | "out";
 /** Where a socket is on the canvas (CSS pixels from the canvas's top-left), for a menu under it. */
 export type Anchor = { left: number; top: number; width: number };
 
-const FULL_W = 860; // the canvas with three nodes; fewer nodes take proportionally less width
 const IN_X = 10;
 const IN_W = 150;
-const IN_ROW = 36;
+const IN_ROW = 40;
 const NODE_X0 = 190;
 const NODE_STEP = 230;
 const W = 200;
-const HEAD = 46;
-const ROW = 22;
-const LABEL = 16;
+const HEAD = 48;
+const ROW = 24;
+const LABEL = 18;
 const LANE = 12;
 
 const COLOR: Record<SocketKind, string> = { audio: "var(--ok)", notes: "var(--accent)", data: "var(--muted)" };
@@ -156,7 +155,7 @@ export default function FlowGraph({ inputs, nodes, wires, selected, onSelect, on
   const gi = geo.inputs;
   return (
     <div className="flow-canvas" ref={canvas}>
-      <svg className="flow-graph" width={`${(viewW / FULL_W) * 100}%`} viewBox={`0 0 ${viewW} ${height}`} role="group" aria-label={t("流程图")}>
+      <svg className="flow-graph" width={viewW} height={height} viewBox={`0 0 ${viewW} ${height}`} role="group" aria-label={t("流程图")}>
         {paths.map((p, i) => (
           <path key={i} d={p.d} fill="none" stroke={p.on ? COLOR[p.kind] : "var(--faint)"} strokeWidth={p.on ? 2 : 1.5}
             strokeDasharray={p.on ? undefined : "4 5"} strokeLinecap="round" />
@@ -164,8 +163,8 @@ export default function FlowGraph({ inputs, nodes, wires, selected, onSelect, on
 
         <g className="flow-inputs" aria-label={t("输入")}>
           <rect x={gi.x} y={gi.y} width={gi.w} height={gi.h} rx={12} fill="var(--surface-2)" stroke="var(--border)" strokeDasharray="5 4" />
-          <text x={gi.x + 12} y={gi.y + 27} fontSize={14} fontWeight={500} fill="var(--ink)">{t("输入")}</text>
-          <text x={gi.x + gi.w - 12} y={gi.y + 27} fontSize={11.5} textAnchor="end" fill="var(--faint)">{t("点一下选文件")}</text>
+          <text x={gi.x + 12} y={gi.y + 28} fontSize={14.5} fontWeight={500} fill="var(--ink)">{t("输入")}</text>
+          <text x={gi.x + gi.w - 12} y={gi.y + 28} fontSize={12} textAnchor="end" fill="var(--faint)">{t("点一下选文件")}</text>
           {inputs.map((s, k) => {
             const y = gi.outY(k);
             const pick = !!s.optional && !s.on;
@@ -173,10 +172,10 @@ export default function FlowGraph({ inputs, nodes, wires, selected, onSelect, on
             return (
               <g key={s.id} {...socketProps("inputs", "out", s, name)}>
                 <rect x={gi.x + 4} y={y - IN_ROW / 2} width={gi.w} height={IN_ROW} fill="transparent" />
-                <text x={gi.x + 12} y={y - 2} fontSize={12.5} fontWeight={s.on ? 500 : 400} fill={s.on || !s.optional ? "var(--ink)" : "var(--muted)"}>
+                <text x={gi.x + 12} y={y - 3} fontSize={13.5} fontWeight={s.on ? 500 : 400} fill={s.on || !s.optional ? "var(--ink)" : "var(--muted)"}>
                   {s.label}{pick ? ` · ${t("可选")}` : ""}
                 </text>
-                <text x={gi.x + 12} y={y + 12} fontSize={11} fill={s.file ? "var(--accent-text)" : "var(--faint)"}>
+                <text x={gi.x + 12} y={y + 13} fontSize={12} fill={s.file ? "var(--accent-text)" : "var(--faint)"}>
                   {s.file ? short(s.file, 22) : s.hint ?? ""}
                 </text>
                 {dot(gi.x + gi.w, y, s, pick)}
@@ -191,7 +190,7 @@ export default function FlowGraph({ inputs, nodes, wires, selected, onSelect, on
           const [bg, fg] = STATE_FILL[n.state];
           const state = STATE_LABEL[n.state] ? t(STATE_LABEL[n.state]) : "";
           const pill = state ? state + (n.status ? ` · ${n.status}` : "") : n.status ?? "";
-          const pillW = Math.max(0, pill.length * 7.5 + 14);
+          const pillW = Math.max(0, pill.length * 8 + 16);
           return (
             <g key={n.id} className="flow-node" role="button" tabIndex={0} aria-pressed={on}
               aria-label={`${n.title}${pill ? `，${pill}` : ""}`}
@@ -199,16 +198,16 @@ export default function FlowGraph({ inputs, nodes, wires, selected, onSelect, on
               onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(n.id); } }}>
               <rect className="flow-box" x={g.x} y={g.y} width={g.w} height={g.h} rx={12} fill="var(--surface-2)"
                 stroke={on ? "var(--accent)" : n.state === "running" ? "var(--accent)" : "var(--border)"} strokeWidth={on ? 1.5 : 1} />
-              <text x={g.x + 12} y={g.y + 27} fontSize={14} fontWeight={500} fill="var(--ink)">{n.title}</text>
+              <text x={g.x + 12} y={g.y + 28} fontSize={14.5} fontWeight={500} fill="var(--ink)">{n.title}</text>
               {pill ? (
                 <g>
-                  <rect x={g.x + g.w - 12 - pillW} y={g.y + 13} width={pillW} height={20} rx={10} fill={bg} />
-                  <text x={g.x + g.w - 12 - pillW / 2} y={g.y + 27} fontSize={11.5} fontWeight={500} textAnchor="middle" fill={fg}>{pill}</text>
+                  <rect x={g.x + g.w - 12 - pillW} y={g.y + 13} width={pillW} height={22} rx={11} fill={bg} />
+                  <text x={g.x + g.w - 12 - pillW / 2} y={g.y + 28} fontSize={12} fontWeight={500} textAnchor="middle" fill={fg}>{pill}</text>
                 </g>
               ) : (
-                <text x={g.x + g.w - 12} y={g.y + 27} fontSize={12} textAnchor="end" fill="var(--faint)">{n.steps}</text>
+                <text x={g.x + g.w - 12} y={g.y + 28} fontSize={12} textAnchor="end" fill="var(--faint)">{n.steps}</text>
               )}
-              <text x={g.x + 12} y={g.y + HEAD + 10} fontSize={11.5} fill="var(--faint)">{t("输入")}</text>
+              <text x={g.x + 12} y={g.y + HEAD + 11} fontSize={12} fill="var(--faint)">{t("输入")}</text>
               {n.inputs.map((s, k) => {
                 const y = g.inY(k);
                 const pick = !!s.optional && !s.on; // a file the user may give: drawn as an empty, dashed socket
@@ -217,19 +216,19 @@ export default function FlowGraph({ inputs, nodes, wires, selected, onSelect, on
                   <g key={s.id} {...socketProps(n.id, "in", s, s.file ? `${s.label}：${s.file}` : s.label)}>
                     <rect x={g.x - 8} y={y - 11} width={g.w - 4} height={ROW} fill="transparent" />
                     {dot(g.x, y, s, pick)}
-                    <text x={g.x + 12} y={y + 4} fontSize={12.5} fill={s.file ? "var(--accent-text)" : s.on || !s.optional ? "var(--ink)" : "var(--muted)"}>
+                    <text x={g.x + 12} y={y + 5} fontSize={13.5} fill={s.file ? "var(--accent-text)" : s.on || !s.optional ? "var(--ink)" : "var(--muted)"}>
                       {text}{pick ? ` · ${t("可选")}` : ""}
                     </text>
                   </g>
                 );
               })}
-              <text x={g.x + 12} y={g.inY(n.inputs.length) + 2} fontSize={11.5} fill="var(--faint)">{t("输出")}</text>
+              <text x={g.x + 12} y={g.inY(n.inputs.length) + 3} fontSize={12} fill="var(--faint)">{t("输出")}</text>
               {n.outputs.map((s, k) => {
                 const y = g.outY(k);
                 return (
                   <g key={s.id} {...socketProps(n.id, "out", s, s.label)}>
                     <rect x={g.x + 12} y={y - 11} width={g.w - 4} height={ROW} fill="transparent" />
-                    <text x={g.x + g.w - 12} y={y + 4} fontSize={12.5} textAnchor="end" fill={s.on ? "var(--ink)" : "var(--muted)"}>{s.label}</text>
+                    <text x={g.x + g.w - 12} y={y + 5} fontSize={13.5} textAnchor="end" fill={s.on ? "var(--ink)" : "var(--muted)"}>{s.label}</text>
                     {dot(g.x + g.w, y, s, false)}
                   </g>
                 );

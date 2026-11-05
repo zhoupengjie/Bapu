@@ -212,14 +212,14 @@ html[lang="ja"] .row .k { width: 190px; }
 /* flow: the node graph and the selected node's panel */
 .flow { display: flex; flex-direction: column; gap: 16px; max-width: 880px; }
 .flow .card { display: flex; flex-direction: column; gap: 14px; }
-.flow-graph { display: block; width: 100%; height: auto; }
+.flow-graph { display: block; max-width: 100%; height: auto; }
 .flow-graph text { font-family: var(--sans); }
 .flow-node { cursor: pointer; }
 .flow-node:hover > rect:first-of-type { stroke: var(--accent); }
 .flow-node:focus-visible { outline: none; }
 .flow-node:focus-visible > rect:first-of-type { stroke: var(--accent); stroke-width: 2; }
 .actions { display: flex; gap: 8px; flex-wrap: wrap; }
-.flow-canvas { position: relative; }
+.flow-canvas { position: relative; }  /* the graph is drawn 1:1; it only shrinks when the card is narrower than it */
 .flow-socket { cursor: pointer; }
 .flow-socket:hover circle, .flow-socket:focus-visible circle { stroke-width: 3; }
 .flow-socket:hover text, .flow-socket:focus-visible text { fill: var(--accent-text); }
