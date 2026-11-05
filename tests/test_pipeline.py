@@ -166,3 +166,25 @@ def test_user_supplied_artifact_skips_its_stage(env, tmp_path):
     out = pipeline.run(wd, {"source": src}, registry=reg, stages=stages)
     assert calls == ["a", "b", "c"]
     assert pipeline.status(wd, reg, stages, {"source": src, "x": x})[0]["state"] == "skipped"
+
+
+def test_blocked_stage_is_left_out_unless_the_target_needs_it(env, tmp_path):
+    """No `source`, but `x` given: a is blocked, b and c run from the file.
+    Asking for a itself names what is missing."""
+    wd, src, reg, calls, stages = env
+    x = tmp_path / "given.txt"
+    x.write_text("given")
+    out = pipeline.run(wd, {"x": x}, registry=reg, stages=stages)
+    assert [(o.stage, o.status) for o in out] == [("a", "skipped"), ("b", "ran"), ("c", "ran")]
+    states = {r["stage"]: r["state"] for r in pipeline.status(wd, reg, stages, {"x": x})}
+    assert states == {"a": "skipped", "b": "fresh", "c": "fresh"}
+    # a stage nobody can feed: blocked, and an error only when it is the target
+    stages = (stages[0], Stage("b", 2, "1", ("x", "extra"), ("y",), {"k": 1, "model": "algo-a"}, stages[1].run,
+                               model_params={"model": "b"}), stages[2])
+    planned = pipeline.plan({"source": "s"}, {}, stages=stages)
+    assert list(planned.keys) == ["a"] and planned.blocked == {"b": ["extra"], "c": ["y"]}
+    assert pipeline.missing_for(stages[2], planned, {"source"}, stages) == ["extra"]
+    out = pipeline.run(wd, {"source": src}, registry=reg, stages=stages, until="a")
+    assert [o.status for o in out] == ["ran"]
+    with pytest.raises(pipeline.PipelineError, match="extra"):
+        pipeline.run(wd, {"source": src}, registry=reg, stages=stages)

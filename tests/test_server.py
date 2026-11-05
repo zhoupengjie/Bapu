@@ -380,3 +380,65 @@ def test_notes_from_an_sv_project_replace_the_transcription(env, tmp_path):
         d = client.delete(f"/api/jobs/{job['id']}/notes").json()
         assert not d["has_notes"] and d["notes"] is None
         assert [s["state"] for s in d["stages"]] == ["fresh", "stale"]
+
+
+def small_wav(path: Path) -> Path:
+    import wave
+
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(8000)
+        w.writeframes(b"\x00\x00" * 800)
+    return path
+
+
+def test_project_from_the_dry_lead_with_sv_notes(env, tmp_path):
+    """Lyrics mode: no song, the dry lead and an SV project are given. The stage
+    that needs the song is blocked, the SV project's tempo stands in, and a typed
+    tempo overrides it."""
+    svc, _ = env()
+    svc.stages = notes_stages()
+    lead = small_wav(tmp_path / "lead.wav")
+    with TestClient(create_app(svc)) as client:
+        assert client.post("/api/jobs", data={"mode": "lyrics", "name": "L"}).status_code == 400  # needs the dry lead
+        r = client.post("/api/jobs", data={"mode": "lyrics", "lead_dry_path": str(lead), "name": "L"})
+        assert r.status_code == 201, r.text
+        job = r.json()
+        assert job["mode"] == "lyrics" and job["sources"] == {"lead_dry": "lead.wav"}
+        assert [s["state"] for s in job["stages"]] == ["blocked", "blocked"]
+
+        one = svp_file(tmp_path, "one.svp", [("extracted", 2)])
+        d = client.post(f"/api/jobs/{job['id']}/inputs/notes", data={"path": str(one)}).json()
+        assert d["sources"]["notes"] == "one.svp" and d["tempo"] == {"bpm": 120.0, "time_signature": "4/4", "origin": "notes"}
+        assert [s["state"] for s in d["stages"]] == ["skipped", "missing"]  # the notes stand in for `first`
+
+        client.post(f"/api/jobs/{job['id']}/run", json={})
+        d = wait_state(client, job["id"])
+        assert d["state"] == "done", d
+        assert [s["state"] for s in d["stages"]] == ["skipped", "fresh"]
+        assert (svc.root / job["id"] / ".bapu" / "02_second" / "y.txt").read_text() == "2|0.0"
+        # the dry lead the user gave is what the review page plays
+        assert client.get(f"/api/jobs/{job['id']}/audio/lead_dry").status_code == 200
+
+        d = client.put(f"/api/jobs/{job['id']}/tempo", json={"bpm": 90}).json()
+        assert d["tempo"]["bpm"] == 90 and d["tempo"]["origin"] == "user"
+        assert client.put(f"/api/jobs/{job['id']}/tempo", json={"bpm": 5}).status_code == 400
+        d = client.delete(f"/api/jobs/{job['id']}/tempo").json()
+        assert d["tempo"] is None
+        # without the notes, the stage that would make them needs the song: the run says so
+        assert [s["state"] for s in client.delete(f"/api/jobs/{job['id']}/inputs/notes").json()["stages"]] == ["blocked", "blocked"]
+        r = client.post(f"/api/jobs/{job['id']}/run", json={"until": "first"})
+        assert r.status_code == 202
+        d = wait_state(client, job["id"])
+        assert d["state"] == "failed" and "原曲" in d["error"]
+
+
+def test_notes_mode_starts_from_the_dry_lead(env, tmp_path):
+    svc, _ = env()
+    lead = small_wav(tmp_path / "lead.wav")
+    with TestClient(create_app(svc)) as client:
+        job = client.post("/api/jobs", data={"mode": "notes", "lead_dry_path": str(lead), "folder": str(tmp_path / "p")}).json()
+        assert job["mode"] == "notes" and job["sources"] == {"lead_dry": "lead.wav"}
+        assert (tmp_path / "p" / ".bapu" / "inputs" / "lead.wav").exists()
+        assert client.get("/api/jobs").json()[0]["mode"] == "notes"

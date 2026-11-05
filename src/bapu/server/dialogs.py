@@ -16,6 +16,10 @@ from pathlib import Path
 KINDS = {
     "audio": ("选择原曲", [("音频或视频", "*.wav *.flac *.mp3 *.m4a *.aac *.ogg *.opus *.mp4 *.mov *.mkv *.webm"),
                           ("所有文件", "*.*")]),
+    "lead_dry": ("选择主唱干声", [("音频或视频", "*.wav *.flac *.mp3 *.m4a *.aac *.ogg *.opus *.mp4 *.mov *.mkv *.webm"),
+                             ("所有文件", "*.*")]),
+    "instrumental": ("选择伴奏", [("音频或视频", "*.wav *.flac *.mp3 *.m4a *.aac *.ogg *.opus *.mp4 *.mov *.mkv *.webm"),
+                              ("所有文件", "*.*")]),
     "lyrics": ("选择参考歌词", [("字幕或歌词", "*.ass *.ssa *.lrc *.txt"), ("所有文件", "*.*")]),
     "notes": ("选择 SV 工程或 MIDI", [("SV 工程或 MIDI", "*.svp *.mid *.midi"), ("所有文件", "*.*")]),
     "project": ("打开 Bapu 工程", [("Bapu 工程", "*.bapu")]),

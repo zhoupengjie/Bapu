@@ -230,3 +230,6 @@ html[lang="ja"] .row .k { width: 190px; }
 .pop-menu button:hover { background: var(--surface-2); }
 .pop-menu button.primary { color: var(--accent-text); font-weight: 500; }
 .pop-menu button[disabled] { opacity: .4; cursor: not-allowed; }
+.pop-input { display: flex; align-items: center; gap: 8px; padding: 6px 10px; font-size: 13.5px; }
+.pop-input input { width: 84px; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-2); color: var(--ink); font: inherit; }
+.pop-input .btn { padding: 6px 12px; }

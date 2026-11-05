@@ -35,7 +35,11 @@ from bapu.workdir import WorkDir
 
 JOB_ID = re.compile(r"^[\w][\w\-.]{0,99}$")
 # input kind (as the API names it) -> source name in the project file / pipeline
-SOURCE_OF = {"audio": "source", "lyrics": "lyrics", "notes": "notes"}
+SOURCE_OF = {"audio": "source", "lyrics": "lyrics", "notes": "notes", "lead_dry": "lead_dry",
+             "instrumental": "instrumental", "tempo": "tempo"}
+# What a project starts from: the song (standard: everything; separate: the stems only), or the
+# dry lead the user already has (notes: the transcription; lyrics: the lyrics on given notes).
+MODES = ("standard", "separate", "notes", "lyrics")
 
 
 class ServiceError(Exception):
@@ -205,15 +209,24 @@ class JobService:
             job_id, k = f"{base}-{k}", k + 1
         return job_id
 
-    def create(self, name: str, audio: Path, lyrics: Path | None = None, folder: Path | None = None) -> str:
-        """New project. `folder` is where the user wants it (default: a new
-        folder under `root`); the inputs are copied into `<folder>/inputs/`."""
-        audio = Path(audio)
-        if not audio.is_file():
-            raise ServiceError(f"找不到音频：{audio}")
+    def create(self, name: str, audio: Path | None = None, lyrics: Path | None = None, folder: Path | None = None,
+               *, lead_dry: Path | None = None, mode: str = "standard") -> str:
+        """New project from the song (`audio`) or, in the notes / lyrics modes,
+        from the dry lead the user already has (`lead_dry`). `folder` is where
+        the user wants it (default: a new folder under `root`); the inputs are
+        copied into `<folder>/.bapu/inputs/`."""
+        if mode not in MODES:
+            raise ServiceError(f"没有这种模式：{mode}；可选：{', '.join(MODES)}")
+        primary_kind = "lead_dry" if mode in ("notes", "lyrics") else "audio"
+        primary = {"audio": audio, "lead_dry": lead_dry}[primary_kind]
+        if primary is None:
+            raise ServiceError("需要主唱干声" if primary_kind == "lead_dry" else "需要原曲")
+        primary = Path(primary)
+        if not primary.is_file():
+            raise ServiceError(f"找不到文件：{primary}")
         if lyrics is not None and not Path(lyrics).is_file():
             raise ServiceError(f"找不到歌词文件：{lyrics}")
-        name = name or audio.stem
+        name = name or primary.stem
         if folder and (old := self.index.find(Path(folder))) is not None and project.leftover(Path(folder)):
             self.index.remove(old)  # its project file is gone: the id can be used again
         job_id = self._folder_id(Path(folder)) if folder else self._new_id(name)
@@ -227,16 +240,19 @@ class JobService:
             raise Conflict(message, {"folder": str(folder.resolve()), "project_file": f.name if f else None})
         try:
             if folder.exists() and project.leftover(folder):
-                # the .bapu file was moved or deleted: start over here (same audio keeps finished steps)
-                project.take_over_leftover(folder, audio)
+                # the .bapu file was moved or deleted: start over here (the same file keeps finished steps)
+                project.take_over_leftover(folder, primary)
             if (old := self.index.find(folder)) is not None:
                 self.index.remove(old)
             folder.mkdir(parents=True, exist_ok=True)
-            project.make_data_dir(folder)
-            sources = {"source": project.copy_input(folder, audio)}
+            data = project.make_data_dir(folder)
+            main = project.copy_input(folder, primary)
+            if primary_kind == "lead_dry":
+                main = self._convert(WorkDir(data), "lead_dry", main)
+            sources = {SOURCE_OF[primary_kind]: main}
             if lyrics is not None:
                 sources["lyrics"] = project.copy_input(folder, Path(lyrics))
-            project.write(folder, {"name": name, "created_at": time.time(), "sources": sources})
+            project.write(folder, {"name": name, "created_at": time.time(), "mode": mode, "sources": sources})
         except OSError as e:
             raise ServiceError(f"写不进工程文件夹：{e}") from None
         self.index.add(job_id, folder)
@@ -295,7 +311,9 @@ class JobService:
         if kind not in SOURCE_OF or kind == "audio":
             raise ServiceError(f"不能去掉这种输入：{kind}")
         wd = self.workdir(job_id)
-        name = SOURCE_OF[kind]
+        self._drop_source(wd, SOURCE_OF[kind])
+
+    def _drop_source(self, wd: WorkDir, name: str) -> None:
         meta = self._meta(wd)
         meta.setdefault("sources", {}).pop(name, None)
         project.write(project.folder_of(wd.root), meta)
@@ -305,29 +323,61 @@ class JobService:
             recorded.pop(name)
             wd.set_sources({n: (Path(p), h) for n, (p, h) in recorded.items()})
 
-    def _set_source(self, wd: WorkDir, kind: str, dest: Path, track: int | None = None) -> Path:
-        if kind not in SOURCE_OF:
-            raise ServiceError(f"没有这种输入：{kind}")
-        if kind == "notes":  # an SV project / MIDI: converted once into the transcription's layout
-            try:
-                dest = external.notes_from_file(dest, wd.root / "inputs", track)
-            except external.AmbiguousTrack as e:
-                raise Conflict(str(e), {"tracks": e.tracks}) from None
-            except external.ExternalError as e:
-                raise ServiceError(str(e)) from None
+    def set_tempo(self, job_id: str, bpm: float, time_signature: str = "4/4") -> Path:
+        """A tempo the user typed, used where the beat tracking would be (no accompaniment)."""
+        wd = self.workdir(job_id)
+        try:
+            dest = external.tempo_file(wd.root / "inputs", bpm, time_signature=time_signature, origin="user")
+        except (external.ExternalError, ValueError) as e:
+            raise ServiceError(str(e)) from None
+        return self._register(wd, "tempo", dest)
+
+    def _convert(self, wd: WorkDir, kind: str, dest: Path, track: int | None = None) -> Path:
+        """A given file in the form the stages read: notes files become notes.json,
+        audio that soundfile cannot read is decoded to WAV."""
+        try:
+            if kind == "notes":
+                return external.notes_from_file(dest, wd.root / "inputs", track)
+            if kind in ("lead_dry", "instrumental"):
+                return external.audio_from_file(dest, wd.root / "inputs")
+        except external.AmbiguousTrack as e:
+            raise Conflict(str(e), {"tracks": e.tracks}) from None
+        except external.ExternalError as e:
+            raise ServiceError(str(e)) from None
+        return dest
+
+    def _register(self, wd: WorkDir, kind: str, dest: Path) -> Path:
         meta = self._meta(wd)
         meta.setdefault("sources", {})[SOURCE_OF[kind]] = str(dest.resolve())
         project.write(project.folder_of(wd.root), meta)
         return dest
 
+    def _set_source(self, wd: WorkDir, kind: str, dest: Path, track: int | None = None) -> Path:
+        if kind not in SOURCE_OF or kind == "tempo":
+            raise ServiceError(f"没有这种输入：{kind}")
+        dest = self._convert(wd, kind, dest, track)
+        self._register(wd, kind, dest)
+        if kind == "notes":
+            # Without the song there is no beat tracking: the SV project's own tempo stands in,
+            # unless the user typed one.
+            meta = self._meta(wd)
+            srcs = meta.get("sources") or {}
+            info = external.describe(dest)
+            if "source" not in srcs and info.get("bpm") and (
+                    "tempo" not in srcs or external.describe_tempo(Path(srcs["tempo"])).get("origin") == "notes"):
+                self._register(wd, "tempo", external.tempo_file(
+                    wd.root / "inputs", float(info["bpm"]), time_signature=info.get("time_signature") or "4/4",
+                    origin="notes", name="notes"))
+        return dest
+
     def sources(self, wd: WorkDir) -> dict[str, Path]:
-        """Inputs for the next run: the project file, falling back to the last
-        run's for the audio and lyrics (notes count only while the project names them)."""
+        """Inputs for the next run: the project file, falling back to what the
+        last run used (clearing an input removes it from both)."""
         out: dict[str, Path] = {}
         for name, p in (self._meta(wd).get("sources") or {}).items():
             if Path(p).exists():
                 out[name] = Path(p)
-        for name in ("source", "lyrics"):
+        for name in (wd.sources() if wd.manifest_path.exists() else {}):
             if name not in out and (p := jobs.stored_source(wd, name)) is not None:
                 out[name] = p
         return out
@@ -360,6 +410,7 @@ class JobService:
         folder = project.folder_of(wd.root)
         pfile = project.project_file(folder)
         return {"id": job_id, "name": meta.get("name", job_id), "folder": str(folder.resolve()),
+                "mode": meta.get("mode") or "standard",
                 "project_file": pfile.name if pfile else None, "state": st.state, "stage": st.stage,
                 "fraction": st.fraction, "error": st.error, "has_score": score.exists(),
                 "attention": attention, "has_lyrics": "lyrics" in self.sources(wd),
@@ -381,8 +432,9 @@ class JobService:
         notes = external.describe(sources["notes"]) if "notes" in sources else None
         if notes:
             names["notes"] = notes["from"]  # the SV project / MIDI, not the converted file
+        tempo = external.describe_tempo(sources["tempo"]) if "tempo" in sources else None
         return {**self.summary(job_id), "stages": rows, "params": wd.load_params(),
-                "sources": names, "notes": notes, "exports": self.exports(wd)}
+                "sources": names, "notes": notes, "tempo": tempo, "exports": self.exports(wd)}
 
     # -- running -----------------------------------------------------------------
     def enqueue(self, job_id: str, req: RunRequest) -> None:
@@ -391,8 +443,8 @@ class JobService:
         if st.state in ("queued", "running"):
             raise Conflict("任务已经在排队或运行中")
         sources = self.sources(wd)
-        if "source" not in sources:
-            raise ServiceError("这个任务没有音频")
+        if not sources:
+            raise ServiceError("这个工程还没有任何输入")
         overrides = jobs.merge(wd.load_params(), req.overrides)
         try:
             missing = jobs.missing_models(sources, overrides, self.registry, req.until, self.stages)

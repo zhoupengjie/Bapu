@@ -37,12 +37,12 @@ export type Side = "in" | "out";
 /** Where a socket is on the canvas (CSS pixels from the canvas's top-left), for a menu under it. */
 export type Anchor = { left: number; top: number; width: number };
 
-const VIEW_W = 860;
+const FULL_W = 860; // the canvas with three nodes; fewer nodes take proportionally less width
 const IN_X = 10;
 const IN_W = 150;
 const IN_ROW = 36;
-const X: Record<NodeId, number> = { separate: 190, notes: 420, lyrics: 650 };
-const ORDER: Port[] = ["inputs", "separate", "notes", "lyrics"];
+const NODE_X0 = 190;
+const NODE_STEP = 230;
 const W = 200;
 const HEAD = 46;
 const ROW = 22;
@@ -58,12 +58,12 @@ const STATE_FILL: Record<NodeState, [string, string]> = {
 
 type Geo = { x: number; y: number; w: number; h: number; inY: (k: number) => number; outY: (k: number) => number };
 
-function nodeGeometry(n: NodeView, top: number): Geo {
+function nodeGeometry(n: NodeView, top: number, column: number): Geo {
   const inTop = top + HEAD + LABEL;
   const outLabel = inTop + n.inputs.length * ROW + 6;
   const outTop = outLabel + LABEL;
   const h = outTop + n.outputs.length * ROW + 10 - top;
-  return { x: X[n.id], y: top, w: W, h, inY: (k) => inTop + k * ROW + ROW / 2, outY: (k) => outTop + k * ROW + ROW / 2 };
+  return { x: NODE_X0 + column * NODE_STEP, y: top, w: W, h, inY: (k) => inTop + k * ROW + ROW / 2, outY: (k) => outTop + k * ROW + ROW / 2 };
 }
 
 function inputsGeometry(items: Socket[], top: number): Geo {
@@ -77,9 +77,14 @@ function wirePath(x1: number, y1: number, x2: number, y2: number, lane: number |
   return `M${x1} ${y1} C${x1 + 14} ${y1},${x1 + 14} ${yLane},${x1 + 36} ${yLane} L${x2 - 36} ${yLane} C${x2 - 14} ${yLane},${x2 - 14} ${y2},${x2} ${y2}`;
 }
 
-/** A file name short enough for a socket label. */
-function short(name: string, max = 14): string {
-  return name.length > max ? `${name.slice(0, max - 1)}…` : name;
+/** A file name short enough for a socket label; `max` in half-width units (a CJK character is two). */
+function short(name: string, max = 24): string {
+  let units = 0;
+  for (let i = 0; i < name.length; i++) {
+    units += /[⺀-鿿가-힯＀-￯]/.test(name[i]) ? 2 : 1;
+    if (units > max) return `${name.slice(0, Math.max(1, i))}…`;
+  }
+  return name;
 }
 
 export default function FlowGraph({ inputs, nodes, wires, selected, onSelect, onSocket, children }: {
@@ -90,13 +95,15 @@ export default function FlowGraph({ inputs, nodes, wires, selected, onSelect, on
 }) {
   const canvas = useRef<HTMLDivElement>(null);
   const byId = Object.fromEntries(nodes.map((n) => [n.id, n])) as Record<NodeId, NodeView>;
+  const ORDER: Port[] = ["inputs", ...nodes.map((n) => n.id)];
+  const viewW = NODE_X0 + nodes.length * NODE_STEP - (NODE_STEP - W) + 10;
 
   // Wires that skip a node run in lanes: from the 输入 column above the nodes, between
   // nodes below them. Count the lanes first, since they decide where the nodes sit.
   const skipping = (w: Wire) => ORDER.indexOf(w.to[0]) - ORDER.indexOf(w.from[0]) > 1;
   const topLanes = wires.filter((w) => w.from[0] === "inputs" && skipping(w)).length;
   const top = 10 + (topLanes ? topLanes * LANE + 14 : 6);
-  const geo = Object.fromEntries(nodes.map((n) => [n.id, nodeGeometry(n, top)])) as Record<Port, Geo>;
+  const geo = Object.fromEntries(nodes.map((n, i) => [n.id, nodeGeometry(n, top, i)])) as Record<Port, Geo>;
   geo.inputs = inputsGeometry(inputs, top);
   const bottom = Math.max(...ORDER.map((p) => geo[p].y + geo[p].h));
 
@@ -149,7 +156,7 @@ export default function FlowGraph({ inputs, nodes, wires, selected, onSelect, on
   const gi = geo.inputs;
   return (
     <div className="flow-canvas" ref={canvas}>
-      <svg className="flow-graph" width="100%" viewBox={`0 0 ${VIEW_W} ${height}`} role="group" aria-label={t("流程图")}>
+      <svg className="flow-graph" width={`${(viewW / FULL_W) * 100}%`} viewBox={`0 0 ${viewW} ${height}`} role="group" aria-label={t("流程图")}>
         {paths.map((p, i) => (
           <path key={i} d={p.d} fill="none" stroke={p.on ? COLOR[p.kind] : "var(--faint)"} strokeWidth={p.on ? 2 : 1.5}
             strokeDasharray={p.on ? undefined : "4 5"} strokeLinecap="round" />
@@ -170,7 +177,7 @@ export default function FlowGraph({ inputs, nodes, wires, selected, onSelect, on
                   {s.label}{pick ? ` · ${t("可选")}` : ""}
                 </text>
                 <text x={gi.x + 12} y={y + 12} fontSize={11} fill={s.file ? "var(--accent-text)" : "var(--faint)"}>
-                  {s.file ? short(s.file, 12) : s.hint ?? ""}
+                  {s.file ? short(s.file, 22) : s.hint ?? ""}
                 </text>
                 {dot(gi.x + gi.w, y, s, pick)}
               </g>

@@ -27,10 +27,7 @@ from bapu.stages.separate import DECODED
 
 DESKTOP_ORIGINS = ("http://tauri.localhost", "https://tauri.localhost", "tauri://localhost")
 
-AUDIO_STEMS = {
-    "vocals": ("separate", "vocals"), "instrumental": ("separate", "instrumental"),
-    "lead": ("lead", "lead"), "backing": ("lead", "backing"), "lead_dry": ("lead", "lead_dry"),
-}
+AUDIO_STEMS = ("vocals", "instrumental", "lead", "backing", "lead_dry")  # artifacts the UI can play
 
 
 class RunBody(BaseModel):
@@ -53,6 +50,11 @@ class ExportBody(BaseModel):
 
 class PullBody(BaseModel):
     accept_license: bool = False
+
+
+class TempoBody(BaseModel):
+    bpm: float
+    time_signature: str = "4/4"
 
 
 class SourceBody(BaseModel):
@@ -197,24 +199,59 @@ def create_app(service: JobService, static_dir: Path | None = None) -> FastAPI:
     @app.post("/api/jobs", status_code=201)
     async def create_job(
         name: str = Form(""),
+        mode: str = Form("standard"),
         audio: UploadFile | None = File(None),
+        lead_dry: UploadFile | None = File(None),
         lyrics: UploadFile | None = File(None),
         audio_path: str = Form(""),
+        lead_dry_path: str = Form(""),
         lyrics_path: str = Form(""),
         folder: str = Form(""),
     ) -> dict[str, Any]:
-        """A new project in `folder`. The audio is uploaded or (local use) given
-        by path; either way it is copied into the project's inputs/."""
-        if audio is None and not audio_path:
-            raise ServiceError("需要音频：上传文件或给出 audio_path")
+        """A new project in `folder`, from the song (standard / separate modes)
+        or the dry lead (notes / lyrics modes). The file is uploaded or (local
+        use) given by path; either way it is copied into the project's inputs/."""
+        from_lead = mode in ("notes", "lyrics")
+        upload, path = (lead_dry, lead_dry_path) if from_lead else (audio, audio_path)
+        if upload is None and not path:
+            raise ServiceError("需要主唱干声：上传文件或给出 lead_dry_path" if from_lead else "需要音频：上传文件或给出 audio_path")
         with tempfile.TemporaryDirectory() as tmp:
-            src = Path(audio_path) if audio_path else Path(tmp) / Path(audio.filename or "audio").name
-            if audio is not None:
-                src.write_bytes(await audio.read())
-            job_id = service.create(name or src.stem, src, Path(lyrics_path) if lyrics_path else None,
-                                    Path(folder) if folder else None)
+            src = Path(path) if path else Path(tmp) / Path(upload.filename or "audio").name
+            if upload is not None:
+                src.write_bytes(await upload.read())
+            job_id = service.create(name or src.stem, None if from_lead else src, Path(lyrics_path) if lyrics_path else None,
+                                    Path(folder) if folder else None, lead_dry=src if from_lead else None, mode=mode)
         if lyrics is not None:
             service.save_upload(job_id, "lyrics", lyrics.filename or "lyrics.txt", await lyrics.read())
+        return service.detail(job_id)
+
+    @app.post("/api/jobs/{job_id}/inputs/{kind}")
+    async def set_input(job_id: str, kind: str, file: UploadFile | None = File(None), path: str = Form(""),
+                        track: int | None = Form(None)) -> dict[str, Any]:
+        """Give a file for an input: lead_dry / instrumental (audio), lyrics, notes
+        (.svp / .mid; `track` when several SV tracks have notes, a 409 lists them)."""
+        if file is not None:
+            service.save_upload(job_id, kind, file.filename or kind, await file.read(), track)
+        elif path:
+            service.set_input(job_id, kind, Path(path), track)
+        else:
+            raise ServiceError("需要文件：上传或给出 path")
+        return service.detail(job_id)
+
+    @app.delete("/api/jobs/{job_id}/inputs/{kind}")
+    def clear_input(job_id: str, kind: str) -> dict[str, Any]:
+        service.clear_input(job_id, kind)
+        return service.detail(job_id)
+
+    @app.put("/api/jobs/{job_id}/tempo")
+    def set_tempo(job_id: str, body: TempoBody) -> dict[str, Any]:
+        """A typed tempo, for projects without the song (no beat tracking)."""
+        service.set_tempo(job_id, body.bpm, body.time_signature)
+        return service.detail(job_id)
+
+    @app.delete("/api/jobs/{job_id}/tempo")
+    def clear_tempo(job_id: str) -> dict[str, Any]:
+        service.clear_input(job_id, "tempo")
         return service.detail(job_id)
 
     @app.get("/api/jobs/{job_id}")
@@ -317,16 +354,15 @@ def create_app(service: JobService, static_dir: Path | None = None) -> FastAPI:
     @app.get("/api/jobs/{job_id}/audio/{stem}")
     def audio(job_id: str, stem: str) -> FileResponse:
         wd = service.workdir(job_id)
+        sources = service.sources(wd)
         if stem == "source":
-            p = service.sources(wd).get("source")
+            p = sources.get("source")
             rec = wd.get("separate")
             decoded = wd.root / rec.dir / DECODED if rec else None
             if decoded is not None and decoded.exists():  # an MP4 etc.: play its decoded audio
                 p = decoded
         elif stem in AUDIO_STEMS:
-            stage, artifact = AUDIO_STEMS[stem]
-            rec = wd.get(stage)
-            p = (wd.root / rec.outputs[artifact]) if rec and artifact in rec.outputs else None
+            p = jobs.artifact(wd, stem, sources)  # separated, or the file the user gave
         else:
             raise HTTPException(404, f"没有音轨 {stem}；可用：source、{'、'.join(AUDIO_STEMS)}")
         if p is None or not Path(p).exists():
@@ -363,7 +399,7 @@ def create_app(service: JobService, static_dir: Path | None = None) -> FastAPI:
     def export(job_id: str, body: ExportBody) -> dict[str, Any]:
         wd = service.workdir(job_id)
         try:
-            written = jobs.export(wd, body.formats, body.audio, body.grid)
+            written = jobs.export(wd, body.formats, body.audio, body.grid, service.sources(wd))
         except jobs.JobError as e:
             raise ServiceError(str(e)) from None
         return {"files": [{"format": f, "name": p.name, "size": p.stat().st_size} for f, p in written]}

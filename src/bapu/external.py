@@ -1,16 +1,18 @@
 """Files the user supplies in place of a stage's output.
 
-Only notes so far: a Synthesizer V project (`.svp`, for example one where SV 2
-extracted the pitch from the dry lead) or a MIDI file replaces the
-transcription (stage 4). The file is converted once into the stage's own JSON
-(`notes.json` layout: start, dur, pitch in seconds and MIDI numbers) so the
-pipeline sees an ordinary artifact; the stage that would have produced it is
-skipped and everything after it reruns.
-
-SV times are read back on Bapu's timeline: when the project has an audio track
-for the dry lead that was moved (the grid alignment on export, or the user
-placing it), the notes move back by the same offset. Lyrics in the file are
-ignored and never copied.
+- Notes: a Synthesizer V project (`.svp`, for example one where SV 2 extracted
+  the pitch from the dry lead) or a MIDI file replaces the transcription
+  (stage 4). The file is converted once into the stage's own JSON (`notes.json`
+  layout: start, dur, pitch in seconds and MIDI numbers) so the pipeline sees an
+  ordinary artifact; the stage that would have produced it is skipped and
+  everything after it reruns. SV times are read back on Bapu's timeline: when
+  the project has an audio track for the dry lead that was moved (the grid
+  alignment on export, or the user placing it), the notes move back by the same
+  offset. Lyrics in the file are ignored and never copied.
+- Audio (`lead_dry`, `instrumental`): used as given when soundfile can read it,
+  otherwise decoded to WAV once.
+- Tempo: a number the user typed, or the first tempo mark of the notes' SV
+  project, written in the tempo stage's layout.
 """
 
 from __future__ import annotations
@@ -20,10 +22,12 @@ from pathlib import Path
 from typing import Any
 
 from bapu import svp
+from bapu.audio import decode_to_wav, readable
 
 VERSION = "1"  # bump when the conversion changes its output
 NOTE_FILES = (".svp", ".mid", ".midi")
 MIN_DUR = 0.01
+BPM_RANGE = (20.0, 400.0)
 
 
 class ExternalError(ValueError):
@@ -134,7 +138,8 @@ def notes_from_file(path: Path, out_dir: Path, track: int | None = None) -> Path
         except (ValueError, KeyError) as e:
             raise ExternalError(f"读不了这个 SV 工程：{e}") from None
         notes, used_track, offset = notes_from_svp(project, track)
-        meta: dict[str, Any] = {"kind": "svp", "track": used_track, "offset_s": round(offset, 4)}
+        meta: dict[str, Any] = {"kind": "svp", "track": used_track, "offset_s": round(offset, 4),
+                                "bpm": svp_bpm(project), "time_signature": svp_meter(project)}
     elif suffix in NOTE_FILES:
         notes = notes_from_midi(path)
         meta = {"kind": "midi"}
@@ -149,6 +154,23 @@ def notes_from_file(path: Path, out_dir: Path, track: int | None = None) -> Path
     return out
 
 
+def svp_bpm(project: dict[str, Any]) -> float | None:
+    """The project's tempo at the start (SV projects usually have one tempo)."""
+    marks = sorted(project.get("time", {}).get("tempo", []), key=lambda m: m.get("position", 0))
+    try:
+        return float(marks[0]["bpm"]) if marks else None
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def svp_meter(project: dict[str, Any]) -> str:
+    meters = project.get("time", {}).get("meter", [])
+    try:
+        return f"{int(meters[0]['numerator'])}/{int(meters[0]['denominator'])}" if meters else "4/4"
+    except (KeyError, TypeError, ValueError):
+        return "4/4"
+
+
 def describe(json_path: Path) -> dict[str, Any]:
     """What the UI shows for a converted notes file: the original name, track, count (no lyrics)."""
     try:
@@ -156,4 +178,43 @@ def describe(json_path: Path) -> dict[str, Any]:
     except (OSError, ValueError):
         return {"from": Path(json_path).name, "notes": None}
     return {"from": d.get("from", Path(json_path).name), "kind": d.get("kind"), "track": d.get("track"),
-            "offset_s": d.get("offset_s"), "notes": len(d.get("notes", []))}
+            "offset_s": d.get("offset_s"), "bpm": d.get("bpm"), "notes": len(d.get("notes", []))}
+
+
+def audio_from_file(path: Path, out_dir: Path) -> Path:
+    """An audio input as the stages can read it: the file itself when soundfile
+    reads it, else its first audio track decoded to `<out_dir>/<stem>.wav`."""
+    path = Path(path)
+    if readable(path):
+        return path
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        return decode_to_wav(path, out_dir / f"{path.stem}.wav")
+    except ValueError as e:
+        raise ExternalError(str(e)) from None
+
+
+def tempo_file(out_dir: Path, bpm: float, *, time_signature: str = "4/4", origin: str = "user",
+               name: str = "tempo") -> Path:
+    """A tempo the user typed (or the notes file carried), in the tempo stage's layout.
+    The beat grid starts at 0 s: nothing is known about the song's first beat."""
+    bpm = float(bpm)
+    if not BPM_RANGE[0] <= bpm <= BPM_RANGE[1]:
+        raise ExternalError(f"拍速要在 {BPM_RANGE[0]:g} 到 {BPM_RANGE[1]:g} BPM 之间")
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / f"{name}.tempo.json"
+    data = {"bpm": round(bpm, 3), "bpm_raw": bpm, "bpm_beat_track": None, "first_beat": 0.0, "beat_phase_s": 0.0,
+            "beats": [], "per_quarter_bpm": [], "ibi_std_ms": None, "fit_residual_ms": None, "steady": True,
+            "confidence": "user", "time_signature": time_signature, "origin": origin}
+    out.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    return out
+
+
+def describe_tempo(json_path: Path) -> dict[str, Any]:
+    try:
+        d = json.loads(Path(json_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"bpm": None, "origin": None}
+    return {"bpm": d.get("bpm"), "time_signature": d.get("time_signature"), "origin": d.get("origin", "user")}

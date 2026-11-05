@@ -18,7 +18,8 @@ from bapu.stages import STAGES
 from bapu.stages.base import Stage
 from bapu.workdir import WorkDir
 
-AUDIO_TRACKS = {"accompaniment": ("separate", "instrumental"), "lead_dry": ("lead", "lead_dry")}
+AUDIO_TRACKS = {"accompaniment": "instrumental", "lead_dry": "lead_dry"}  # .svp track -> artifact
+PRODUCER = {o: st.name for st in STAGES for o in st.outputs}  # artifact -> the stage that makes it
 EXPORT_FORMATS = ("mid", "svp", "paste")  # from the finished score
 # From the separation / notes steps alone, before any lyrics: an .svp with only the
 # audio tracks (for SV2 to extract the pitch from), one with the notes (no lyrics), the stems.
@@ -53,16 +54,28 @@ def stored_source(wd: WorkDir, name: str) -> Path | None:
     return Path(p[0]) if p and Path(p[0]).exists() else None
 
 
+def artifact(wd: WorkDir, name: str, sources: dict[str, Path] | None = None) -> Path | None:
+    """Where artifact `name` is: the file the user gave for it (`sources`,
+    default the last run's), else the output of the stage that makes it."""
+    if sources is None:
+        sources = {n: Path(p) for n, (p, _) in wd.sources().items()} if wd.manifest_path.exists() else {}
+    given = sources.get(name)
+    if given is not None and Path(given).exists():
+        return Path(given)
+    stage = PRODUCER.get(name)
+    rec = wd.get(stage) if stage else None
+    p = (wd.root / rec.outputs[name]) if rec and name in rec.outputs else None
+    return p if p is not None and p.exists() else None
+
+
 def missing_models(sources: dict[str, Path], overrides: dict[str, dict[str, Any]], registry: Registry,
                    until: str | None = None, stages: Sequence[Stage] = STAGES) -> list[ModelSpec]:
     """Models the run will need that are not downloaded and verified yet."""
     planned = pipeline.plan({n: "?" for n in sources}, overrides, stages=stages)
     out: list[ModelSpec] = []
     for st in stages:
-        if st.name in planned.skipped:
-            continue  # its output comes from the user: no model needed
         if st.name not in planned.keys:
-            break
+            continue  # its output comes from the user, or an input is missing: no model needed
         params = pipeline.resolve_params(st, overrides.get(st.name), set(sources) & set(st.inputs))
         for spec in pipeline.resolve_models(st, params, registry).values():
             if spec is not None and registry.status(spec) not in ("ready", "builtin") and spec not in out:
@@ -72,34 +85,32 @@ def missing_models(sources: dict[str, Path], overrides: dict[str, dict[str, Any]
     return out
 
 
-def audio_tracks(wd: WorkDir, spec: str) -> list[tuple[str, Path]]:
-    """Audio tracks for the .svp: the separated accompaniment and the dry lead
-    (for comparing the synthesised vocal with the original)."""
+def audio_tracks(wd: WorkDir, spec: str, sources: dict[str, Path] | None = None) -> list[tuple[str, Path]]:
+    """Audio tracks for the .svp: the accompaniment and the dry lead (separated,
+    or given by the user), for comparing the synthesised vocal with the original."""
     out = []
     for key in [x.strip() for x in spec.split(",") if x.strip() and x.strip() != "none"]:
         if key not in AUDIO_TRACKS:
             raise JobError(f"不认识的音频轨：{key}（可用：{', '.join(AUDIO_TRACKS)}、none）")
-        stage, artifact = AUDIO_TRACKS[key]
-        rec = wd.get(stage)
-        if rec and artifact in rec.outputs:
-            out.append((key.replace("_", " "), (wd.root / rec.outputs[artifact]).resolve()))
+        p = artifact(wd, AUDIO_TRACKS[key], sources)
+        if p is not None:
+            out.append((key.replace("_", " "), p.resolve()))
     return out
 
 
-def _stage_file(wd: WorkDir, stage: str, artifact: str, what: str) -> Path:
-    rec = wd.get(stage)
-    p = (wd.root / rec.outputs[artifact]) if rec and artifact in rec.outputs else None
-    if p is None or not p.exists():
-        raise JobError(f"还没有{what}：先跑完它那一步")
+def _need(wd: WorkDir, name: str, what: str, sources: dict[str, Path] | None) -> Path:
+    p = artifact(wd, name, sources)
+    if p is None:
+        raise JobError(f"还没有{what}：先跑完它那一步，或者直接给一个")
     return p
 
 
-def partial_score(wd: WorkDir, with_notes: bool) -> dict[str, Any]:
+def partial_score(wd: WorkDir, with_notes: bool, sources: dict[str, Path] | None = None) -> dict[str, Any]:
     """A score with the tempo (and the merged notes, lyric-less) from the stage
-    outputs, for the .svp exports that come before the lyrics."""
+    outputs or the user's files, for the .svp exports that come before the lyrics."""
     from bapu import corrections as corr
 
-    tempo = json.loads(_stage_file(wd, "tempo", "tempo", "拍速").read_text(encoding="utf-8"))
+    tempo = json.loads(_need(wd, "tempo", "拍速", sources).read_text(encoding="utf-8"))
     bpm = float(tempo["bpm"])
     fixes = [c for c in (corr.load(wd.corrections_path) if wd.corrections_path.exists() else []) if c["type"] == "tempo"]
     if fixes:
@@ -108,7 +119,7 @@ def partial_score(wd: WorkDir, with_notes: bool) -> dict[str, Any]:
     lang = str(langs[0] if isinstance(langs, list) else langs).split(",")[0]
     notes: list[dict[str, Any]] = []
     if with_notes:
-        raw = json.loads(_stage_file(wd, "splits", "merged_notes", "音符").read_text(encoding="utf-8"))["notes"]
+        raw = json.loads(_need(wd, "merged_notes", "音符", sources).read_text(encoding="utf-8"))["notes"]
         notes = [{"start": n["start"], "dur": n["dur"], "pitch": int(round(n["pitch"])), "lyric": PLACEHOLDER_LYRIC,
                   "lang": lang} for n in raw]
     return {
@@ -121,10 +132,11 @@ def partial_score(wd: WorkDir, with_notes: bool) -> dict[str, Any]:
 
 
 def export(wd: WorkDir, formats: Sequence[str] = EXPORT_FORMATS, audio: str = "accompaniment,lead_dry",
-           grid: int = 0) -> list[tuple[str, Path]]:
+           grid: int = 0, sources: dict[str, Path] | None = None) -> list[tuple[str, Path]]:
     """Write the requested formats. In a project they go next to the .bapu
     file, named after the project, without overwriting a file Bapu did not
-    write; in a bare work dir (tests, old CLI runs) into `<work dir>/export/`."""
+    write; in a bare work dir (tests, old CLI runs) into `<work dir>/export/`.
+    `sources`: the user's files standing in for artifacts (default: the last run's)."""
     import shutil
 
     from bapu.export import midi, paste
@@ -162,22 +174,25 @@ def export(wd: WorkDir, formats: Sequence[str] = EXPORT_FORMATS, audio: str = "a
         elif f == "paste":
             outs = [paste.write(score, target(f"{name}.paste.txt"))]
         elif f == "svp":
-            outs = [svp_export.write(score, target(f"{name}.svp"), audio_tracks=audio_tracks(wd, audio), name=name, grid=grid)]
+            outs = [svp_export.write(score, target(f"{name}.svp"), audio_tracks=audio_tracks(wd, audio, sources), name=name, grid=grid)]
         elif f in ("svp-audio", "svp-notes"):
-            tracks = audio_tracks(wd, audio)
+            tracks = audio_tracks(wd, audio, sources)
             if f == "svp-audio" and not tracks:
                 raise JobError("还没有可以放进工程的音轨：先跑完分离这一步")
             label = "音轨" if f == "svp-audio" else "音符"
-            outs = [svp_export.write(partial_score(wd, f == "svp-notes"), target(f"{name} {label}.svp"),
+            outs = [svp_export.write(partial_score(wd, f == "svp-notes", sources), target(f"{name} {label}.svp"),
                                      audio_tracks=tracks, name=name, grid=grid)]
         elif f == "wav":
             for key, label in WAV_LABELS.items():
-                stage, artifact = AUDIO_TRACKS[key]
-                src = _stage_file(wd, stage, artifact, label)
+                src = artifact(wd, AUDIO_TRACKS[key], sources)
+                if src is None:
+                    continue  # a project started from the dry lead has no accompaniment
                 dest = target(f"{name} {label}.wav")
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(src, dest)
                 outs.append(dest)
+            if not outs:
+                raise JobError("还没有分轨：先跑完人声分离这一步")
         for out in outs:
             if in_project:
                 project.record_export(wd.root, out)

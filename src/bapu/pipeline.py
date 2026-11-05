@@ -1,10 +1,11 @@
 """Run the stages in order, skipping those whose cache key has not changed.
 
-Sources are the user's files: `source` (the recording), `lyrics` (the lyric
-file) and, optionally, artifacts the user supplies in place of a stage's output
-(`notes` from an SV project, see bapu.external). A stage whose downstream
-outputs are all supplied that way is skipped; a stage whose inputs are not
-available (no lyrics given yet) ends the run there.
+Sources are the user's files, named like the artifacts they stand for:
+`source` (the recording) and `lyrics` (the lyric file), or artifacts given in
+place of a stage's output (`lead_dry`, `instrumental`, `tempo`, `notes`; see
+bapu.external). A stage whose downstream outputs are all supplied that way is
+skipped; a stage missing an input nobody supplies or produces is blocked and
+left out, which is an error only when the run's target needs it.
 """
 
 from __future__ import annotations
@@ -23,6 +24,13 @@ from bapu.stages import STAGES
 from bapu.stages.base import Stage, StageContext
 from bapu.workdir import StageRecord, WorkDir, cache_key
 
+# artifact names as the user sees them (in error messages)
+ARTIFACT_LABEL = {
+    "source": "原曲", "vocals": "人声", "instrumental": "伴奏", "lead": "主唱", "backing": "伴唱", "lead_dry": "主唱干声",
+    "tempo": "拍速", "notes": "音符", "merged_notes": "合并后的音符", "boundaries": "音符交界", "dictation": "听写",
+    "lyrics": "参考歌词", "lyrics_lines": "歌词", "fusion": "歌词融合", "alignment": "对齐", "score": "乐谱",
+}
+
 
 class PipelineError(Exception):
     pass
@@ -31,7 +39,7 @@ class PipelineError(Exception):
 @dataclass
 class Outcome:
     stage: str
-    status: str  # "ran" | "cached" | "skipped" (its output came from the user)
+    status: str  # "ran" | "cached" | "skipped" (its output came from the user) | "blocked" (an input is missing)
     record: StageRecord | None
 
 
@@ -39,6 +47,7 @@ class Outcome:
 class Plan:
     keys: dict[str, str] = field(default_factory=dict)  # stages that run, with their cache keys
     skipped: list[str] = field(default_factory=list)  # stages replaced by a user-supplied artifact
+    blocked: dict[str, list[str]] = field(default_factory=dict)  # stage -> inputs nobody supplies or produces
 
 
 def find_stage(name: str, stages: Sequence[Stage] = STAGES) -> Stage:
@@ -96,9 +105,9 @@ def plan(
     entries: list[dict[str, Any]] | None = None,
     stages: Sequence[Stage] = STAGES,
 ) -> Plan:
-    """Cache key of every stage whose inputs are available, chained through
-    upstream keys; stops at the first stage that lacks an input. Stages whose
-    outputs the user supplied are listed as skipped instead."""
+    """Cache key of every stage that can run, chained through upstream keys.
+    Stages whose outputs the user supplied are skipped; stages missing an
+    input are blocked (later stages that do not need them still run)."""
     fps = dict(source_fps)
     external = set(source_fps)
     out = Plan()
@@ -106,9 +115,11 @@ def plan(
         if supplied(st, external, stages):
             out.skipped.append(st.name)
             continue
+        missing = [n for n in st.inputs if n not in fps and n not in st.optional_inputs]
+        if missing:
+            out.blocked[st.name] = missing
+            continue
         params = resolve_params(st, overrides.get(st.name), external & set(st.inputs))
-        if any(n not in fps for n in st.inputs if n not in st.optional_inputs):
-            break
         payload: dict[str, Any] = {
             "stage": st.name, "version": st.version, "params": params,
             "inputs": {n: fps.get(n) for n in st.inputs},
@@ -131,6 +142,32 @@ def plan_keys(
     return plan(source_fps, overrides, entries, stages).keys
 
 
+def missing_for(target: Stage, planned: Plan, external: set[str], stages: Sequence[Stage] = STAGES) -> list[str]:
+    """Artifacts the target cannot get: inputs of the blocked stages it needs, transitively."""
+    producer = {o: s for s in stages for o in s.outputs}
+    seen: set[str] = set()
+    missing: list[str] = []
+    todo = [target]
+    while todo:
+        s = todo.pop()
+        if s.name in seen:
+            continue
+        seen.add(s.name)
+        for n in s.inputs:
+            if n in external or n in s.optional_inputs:
+                continue
+            p = producer.get(n)
+            if p is None:
+                if n not in missing:
+                    missing.append(n)
+            elif p.name in planned.blocked:
+                missing += [m for m in planned.blocked[p.name] if m not in missing]
+                todo.append(p)
+            elif p.name not in planned.skipped:
+                todo.append(p)
+    return [m for m in missing if m not in external]
+
+
 def run(
     workdir: WorkDir,
     sources: dict[str, Path],
@@ -144,14 +181,15 @@ def run(
 ) -> list[Outcome]:
     overrides = overrides or {}
     sources = {k: Path(v) for k, v in sources.items() if v is not None}
-    if "source" not in sources:
-        raise PipelineError("没有给出音频")
+    if not sources:
+        raise PipelineError("没有给出任何输入")
     for name, p in sources.items():
         if not p.exists():
             raise PipelineError(f"找不到文件：{p}")
     if from_stage:
         find_stage(from_stage, stages)
-    last = find_stage(until, stages).index if until else None
+    target = find_stage(until, stages) if until else stages[-1]
+    last = target.index
 
     fps = {name: sha256_file(p) for name, p in sources.items()}
     workdir.root.mkdir(parents=True, exist_ok=True)
@@ -159,16 +197,16 @@ def run(
     entries = load_corrections(workdir)
     planned = plan(fps, overrides, entries, stages)
     keys, skipped = planned.keys, set(planned.skipped)
-    if last is not None:
-        blocked = [s.name for s in stages if s.index <= last and s.name not in keys and s.name not in skipped]
-        if blocked:
-            raise PipelineError(f"{blocked[0]} 缺少输入")
+    if target.name not in keys and target.name not in skipped:
+        missing = missing_for(target, planned, set(sources), stages)
+        labels = "、".join(ARTIFACT_LABEL.get(m, m) for m in missing) or "、".join(planned.blocked.get(target.name, []))
+        raise PipelineError(f"缺少输入：{labels}（{target.title or target.name} 这一步需要）")
 
     artifacts: dict[str, Path] = {n: p.resolve() for n, p in sources.items()}
     outcomes: list[Outcome] = []
     forced = False
     for st in stages:
-        if last is not None and st.index > last:
+        if st.index > last:
             break
         if st.name == from_stage:
             forced = True
@@ -177,7 +215,9 @@ def run(
             outcomes.append(Outcome(st.name, "skipped", None))
             continue
         if st.name not in keys:
-            break
+            progress(ProgressEvent(st.name, "skip", message="没有它的输入，这次不做"))
+            outcomes.append(Outcome(st.name, "blocked", None))
+            continue
         params = resolve_params(st, overrides.get(st.name), set(sources) & set(st.inputs))
         models = resolve_models(st, params, registry)
         key = keys[st.name]
@@ -225,7 +265,7 @@ def run(
 
 def status(workdir: WorkDir, registry: Registry, stages: Sequence[Stage] = STAGES,
            sources: dict[str, Path] | None = None) -> list[dict[str, Any]]:
-    """Per-stage state for `bapu status`: fresh / stale / missing / skipped.
+    """Per-stage state for `bapu status`: fresh / stale / missing / skipped / blocked.
     `sources`: the files the next run would use (default: the last run's)."""
     if sources is None:
         srcs = {n: Path(p) for n, (p, _) in workdir.sources().items()}
@@ -233,7 +273,7 @@ def status(workdir: WorkDir, registry: Registry, stages: Sequence[Stage] = STAGE
         srcs = {n: Path(p) for n, p in sources.items()}
     overrides = workdir.load_params()
     planned = Plan()
-    if "source" in srcs and all(p.exists() for p in srcs.values()):
+    if srcs and all(p.exists() for p in srcs.values()):
         fps = {n: sha256_file(p) for n, p in srcs.items()}
         planned = plan(fps, overrides, load_corrections(workdir), stages)
     rows = []
@@ -241,6 +281,8 @@ def status(workdir: WorkDir, registry: Registry, stages: Sequence[Stage] = STAGE
         rec = workdir.get(st.name)
         if st.name in planned.skipped:
             state = "skipped"
+        elif st.name in planned.blocked:
+            state = "blocked"
         elif rec is None:
             state = "missing"
         elif st.name in planned.keys and workdir.fresh(st.name, planned.keys[st.name]) is not None:

@@ -63,10 +63,10 @@ function remember(id: string | null) {
 
 /** Has the processing been started (or finished) at least once? */
 export const started = (job: JobDetail) =>
-  job.state === "running" || job.state === "queued" || job.stages.some((s) => s.state !== "missing" && s.state !== "skipped");
+  job.state === "running" || job.state === "queued" || job.stages.some((s) => s.state !== "missing" && s.state !== "skipped" && s.state !== "blocked");
 
-/** The steps a run goes through: those replaced by a file the user gave are left out. */
-export const activeStages = (job: JobDetail) => job.stages.filter((s) => s.state !== "skipped");
+/** The steps a run goes through: those replaced by a file the user gave, or without their inputs, are left out. */
+export const activeStages = (job: JobDetail) => job.stages.filter((s) => s.state !== "skipped" && s.state !== "blocked");
 
 type StepView = { step: Step; status: string; state: "done" | "now" | "warn" | "todo" | "locked" };
 

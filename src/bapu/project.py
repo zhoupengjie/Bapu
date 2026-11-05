@@ -139,6 +139,7 @@ def read(folder: Path) -> dict[str, Any]:
                 meta["name"] = audio[0].stem
     meta["sources"] = {n: str((folder / p).resolve()) for n, p in (meta.get("sources") or {}).items()}
     meta.setdefault("name", folder.name)
+    meta["mode"] = meta.get("mode") or "standard"  # standard | separate | notes | lyrics (see bapu.service)
     return meta
 
 
@@ -151,6 +152,7 @@ def write(folder: Path, meta: dict[str, Any]) -> Path:
     data = {
         "format": FORMAT, "version": VERSION, "name": meta.get("name") or folder.name,
         "created_at": meta.get("created_at", time.time()),
+        "mode": meta.get("mode") or "standard",
         "sources": {n: _rel(folder, Path(p)) for n, p in (meta.get("sources") or {}).items()},
     }
     write_json_atomic(dest, data)
@@ -207,11 +209,11 @@ def leftover(folder: Path) -> bool:
     return project_file(folder) is None and not _legacy_markers(folder) and (folder / DATA).is_dir()
 
 
-def take_over_leftover(folder: Path, audio: Path) -> str:
+def take_over_leftover(folder: Path, primary: Path) -> str:
     """Before a new project goes into a folder with leftover `.bapu/`: keep it
-    when it was made from the same audio (its finished steps stay valid), else
-    set it aside as `.bapu-old-<time>/` (nothing is deleted).
-    Returns "reused" or "set_aside"."""
+    when it was made from the same file (the song or the dry lead: its finished
+    steps stay valid), else set it aside as `.bapu-old-<time>/` (nothing is
+    deleted). Returns "reused" or "set_aside"."""
     from bapu.audio import sha256_file
 
     folder = Path(folder)
@@ -220,8 +222,9 @@ def take_over_leftover(folder: Path, audio: Path) -> str:
     same = False
     if manifest.exists():
         try:
-            src = (json.loads(_retry(lambda: manifest.read_text(encoding="utf-8"))).get("sources") or {}).get("source") or {}
-            same = src.get("sha256") == sha256_file(Path(audio))
+            srcs = json.loads(_retry(lambda: manifest.read_text(encoding="utf-8"))).get("sources") or {}
+            sha = sha256_file(Path(primary))
+            same = any(isinstance(s, dict) and s.get("sha256") == sha for s in srcs.values())
         except (ValueError, OSError):
             same = False
     if same:

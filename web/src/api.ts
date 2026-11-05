@@ -4,20 +4,25 @@ export type StageRow = {
   stage: string;
   title: string;
   index: number;
-  state: "fresh" | "stale" | "missing" | "skipped"; // skipped: its output is a file the user gave
+  state: "fresh" | "stale" | "missing" | "skipped" | "blocked"; // skipped: its output is a file the user gave; blocked: an input nobody gives
   seconds: number | null;
   metrics: Record<string, unknown>;
   params: Record<string, unknown>;
 };
 
 /** The notes file (SV project / MIDI) used instead of the transcription. */
-export type NotesSource = { from: string; kind: "svp" | "midi" | null; track: number | null; offset_s: number | null; notes: number | null };
+export type NotesSource = { from: string; kind: "svp" | "midi" | null; track: number | null; offset_s: number | null; bpm: number | null; notes: number | null };
+/** A tempo given instead of the beat tracking: typed by the user, or the SV project's own. */
+export type TempoSource = { bpm: number | null; time_signature?: string; origin: "user" | "notes" | null };
+/** What a project starts from: the song, or the dry lead the user already has. */
+export type Mode = "standard" | "separate" | "notes" | "lyrics";
 export type SvTrack = { index: number; name: string; notes: number; audio: boolean };
 
 export type JobSummary = {
   id: string;
   name: string;
   folder: string; // the project folder
+  mode: Mode;
   project_file: string | null; // <name>.bapu inside it
   state: "idle" | "queued" | "running" | "done" | "failed" | "cancelled";
   stage: string | null;
@@ -36,6 +41,7 @@ export type JobDetail = JobSummary & {
   params: Record<string, Record<string, unknown>>;
   sources: Record<string, string>;
   notes: NotesSource | null;
+  tempo: TempoSource | null;
   exports: { name: string; size: number; mtime: number }[];
 };
 

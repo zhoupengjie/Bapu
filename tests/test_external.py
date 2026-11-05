@@ -78,6 +78,38 @@ def test_midi_notes(tmp_path):
     data = json.loads(out.read_text(encoding="utf-8"))
     assert data["kind"] == "midi" and [n["pitch"] for n in data["notes"]] == [60, 62]
     assert data["notes"][0]["start"] == pytest.approx(0.48, abs=0.002)
-    assert external.describe(out) == {"from": "x.mid", "kind": "midi", "track": None, "offset_s": None, "notes": 2}
+    assert external.describe(out) == {"from": "x.mid", "kind": "midi", "track": None, "offset_s": None, "bpm": None, "notes": 2}
     with pytest.raises(external.ExternalError):
         external.notes_from_file(tmp_path / "x.txt", tmp_path / "inputs")
+
+
+def test_svp_notes_carry_the_project_tempo(tmp_path):
+    p = project(track("v", [note(0, 1, 60)]), bpm=98.5)
+    p["time"]["meter"] = [{"index": 0, "numerator": 3, "denominator": 4}]
+    out = external.notes_from_file(write(tmp_path, p), tmp_path / "inputs")
+    d = external.describe(out)
+    assert d["bpm"] == 98.5
+    assert json.loads(out.read_text(encoding="utf-8"))["time_signature"] == "3/4"
+
+
+def test_tempo_file_and_audio_passthrough(tmp_path):
+    t = external.tempo_file(tmp_path / "inputs", 125, time_signature="4/4", origin="user")
+    data = json.loads(t.read_text(encoding="utf-8"))
+    assert t.name == "tempo.tempo.json" and data["bpm"] == 125 and data["confidence"] == "user" and data["beat_phase_s"] == 0.0
+    assert external.describe_tempo(t) == {"bpm": 125, "time_signature": "4/4", "origin": "user"}
+    with pytest.raises(external.ExternalError):
+        external.tempo_file(tmp_path / "inputs", 1000)
+    # a WAV is used as it is; something unreadable is an error, not a silent copy
+    import wave
+
+    wav = tmp_path / "lead.wav"
+    with wave.open(str(wav), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(8000)
+        w.writeframes(b"\x00\x00" * 800)
+    assert external.audio_from_file(wav, tmp_path / "inputs") == wav
+    bad = tmp_path / "x.mp4"
+    bad.write_bytes(b"not a video")
+    with pytest.raises(external.ExternalError):
+        external.audio_from_file(bad, tmp_path / "inputs")
