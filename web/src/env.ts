@@ -110,24 +110,10 @@ export function useEnvState(service: Service | null) {
     refresh();
     api.get<Environment>("/system/environment").then(setEnvironment).catch(() => {});
     api.get<{ choice: SourceChoice }>("/system/sources").then((s) => setSourceState(s.choice)).catch(() => {});
-    // once a day, quietly: is there a newer Bapu?
-    let last = 0;
-    try {
-      last = Number(localStorage.getItem("bapu.updateCheckedAt") || 0);
-    } catch {
-      /* storage unavailable */
-    }
-    if (Date.now() - last > 24 * 3600 * 1000) {
-      api.post<UpdateStatus>("/update/check").then((u) => {
-        setUpdate(u);
-        try {
-          localStorage.setItem("bapu.updateCheckedAt", String(Date.now()));
-        } catch {
-          /* ignore */
-        }
-      }).catch(() => {});
-    }
-  }, [apiUp, refresh]);
+    // at every start, quietly: is there a newer Bapu? (a small file on GitHub; the service
+    // forgets the answer when it restarts, so this is not limited to once a day)
+    checkUpdate();
+  }, [apiUp, refresh]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // the runtime row
   let runtime: Runtime;
@@ -231,6 +217,14 @@ export function useEnvState(service: Service | null) {
     }
   }
 
+  /** Ask GitHub for the newest release; the row shows 检查中… until it answers. */
+  function checkUpdate() {
+    if (!apiUp) return;
+    setUpdate((u) => (u ? { ...u, state: "checking" } : u));
+    api.post<UpdateStatus>("/update/check").then(setUpdate)
+      .catch(() => api.get<UpdateStatus>("/update").then(setUpdate).catch(() => {}));
+  }
+
   async function setThreads(n: number) {
     const v = Math.max(1, Math.min(16, n));
     setThreadsState(v);
@@ -247,7 +241,7 @@ export function useEnvState(service: Service | null) {
   return {
     apiUp, portable, setup, runtime, netSpeed, downloads, update, environment, source, threads, error,
     busy, ready, missingModels, runtimeMissing, updateAvailable, paused: downloads?.state === "paused",
-    refresh, start, pause, setThreads, setSource, installRuntime,
+    refresh, start, pause, setThreads, setSource, installRuntime, checkUpdate,
   };
 }
 

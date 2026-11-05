@@ -98,7 +98,10 @@ export default function EnvPage() {
   if (env.apiUp && update) {
     const latest = update.latest?.version ?? update.current;
     const zip = update.latest?.zip.size ?? 0;
-    bapu = { key: "bapu", name: `Bapu ${update.current}`, size: zip, got: 0, done: true, now: false, paused: false, st: t("最新版") };
+    // 最新版 only when a check said so; before that (or after a failed check) offer to check
+    const check = <button type="button" className="link" onClick={env.checkUpdate}>{t("检查更新")}</button>;
+    const known = update.state === "latest" ? t("最新版") : update.state === "checking" ? t("检查中…") : check;
+    bapu = { key: "bapu", name: `Bapu ${update.current}`, size: zip, got: 0, done: update.state === "latest", now: false, paused: false, st: known };
     if (updBusy) {
       const size = update.total ?? zip;
       Object.assign(bapu, { name: `Bapu ${latest}`, size, got: update.done, done: false, now: true, st: size ? part(update.done, size) : "" });

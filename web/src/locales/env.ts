@@ -46,5 +46,7 @@ export default {
     "Apple 芯片": "Apple chip",
     "只在 Apple 芯片的 Mac 上可用": "Only on Macs with Apple chips",
     "M1 及以后的 Mac，需要 macOS 14 以上；还没在 Mac 上测过": "Macs with M1 or later, macOS 14 or newer; not tested on a Mac yet",
+    "检查更新": "Check for updates",
+    "检查中…": "Checking…",
   } as Record<string, string>,
 };
