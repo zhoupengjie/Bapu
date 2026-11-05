@@ -6,6 +6,7 @@ import { desktopPick, inDesktop, onDesktopDrop, revealInFolder } from "../deskto
 import { STAGE_LABEL } from "../env";
 import { t } from "../i18n";
 import { Icon } from "../icons";
+import CheckPage from "./CheckPage";
 
 // 流程: a mode (标准流程 / 只分离人声 / 只推理音符音高 / 只推理歌词填词) decides what the
 // project starts from and which nodes the graph shows; the 输入 column holds what the
@@ -34,7 +35,8 @@ const LANGS = [["yue", "粤语"], ["zh", "普通话"], ["ja", "日语"], ["en", 
 const CHINESE = ["yue", "zh"]; // kanji look the same in Chinese and Japanese: Japanese goes with English only
 const DEFAULT_LANGS = ["yue", "en"];
 const AUDIO = "accompaniment,lead_dry";
-const GRID_KEY = "bapu.exportGrid"; // the grid chosen on the 导出 page applies to the .svp saved here too
+const GRID_KEY = "bapu.exportGrid"; // the SV grid the saved .svp files line up with (remembered per browser)
+const GRIDS = [[0, "不对齐"], [8, "1/8"], [16, "1/16"], [32, "1/32"]] as const;
 const MORE_LABEL: Record<string, string> = { lead: "提取主唱", splits: "合并音符" };
 const label = (stage: string, title: string) => t(STAGE_LABEL[stage] ?? MORE_LABEL[stage] ?? title);
 const LYRICS_FILE = /\.(ass|ssa|lrc|txt)$/i;
@@ -108,6 +110,8 @@ export default function FlowPage() {
   const [error, setError] = useState<string | null>(null);
   const [needsEnv, setNeedsEnv] = useState(false);
   const [files, setFiles] = useState<Written[]>([]);
+  const [grid, setGridState] = useState(savedGrid);
+  const [checking, setChecking] = useState(false); // the piano roll and the attention list, under the panel
   // before the project exists: the files and tempo chosen so far, the file whose folder was taken
   const [pre, setPre] = useState<Partial<Record<Kind, Picked>>>({});
   const [preTempo, setPreTempo] = useState<number | null>(null);
@@ -194,10 +198,19 @@ export default function FlowPage() {
   }), [act, enc, refresh]);
 
   const exportNow = useCallback((formats: string[]) => act(async () => {
-    const r = await api.post<{ files: Written[] }>(`/jobs/${enc}/export`, { formats, audio: AUDIO, grid: savedGrid() });
+    const r = await api.post<{ files: Written[] }>(`/jobs/${enc}/export`, { formats, audio: AUDIO, grid });
     setFiles(r.files);
     await refresh();
-  }), [act, enc, refresh]);
+  }), [act, enc, grid, refresh]);
+
+  const setGrid = (g: number) => {
+    setGridState(g);
+    try {
+      localStorage.setItem(GRID_KEY, String(g));
+    } catch {
+      /* storage unavailable */
+    }
+  };
 
   /** Give the project a file; a 409 means several SV tracks have notes and one must be chosen. */
   const submit = useCallback((kind: Kind, p: Picked, chosen?: number) => act(async () => {
@@ -583,7 +596,7 @@ export default function FlowPage() {
         if (n != null) bits.push(t("{n} 个音符", { n }));
         if (j.attention != null) bits.push(t("待确认 {n} 处", { n: j.attention }));
         return { title: bits.join(" · "), items: [
-          { label: t("检查"), primary: true, run: () => go("check") },
+          { label: t("检查"), primary: true, run: () => setChecking(true) },
           { label: t("存 svp"), disabled: !idle, run: () => exportNow(["svp"]) },
           { label: t("存 MIDI"), disabled: !idle, run: () => exportNow(["mid"]) },
           ...open_] };
@@ -728,8 +741,9 @@ export default function FlowPage() {
     actions = (
       <>
         <button type="button" className={`btn ${panelNode.state === "done" ? "" : "primary"}`} disabled={!idle} onClick={() => run()}>{t("运行")}</button>
-        <button type="button" className="btn" disabled={!j.has_score} onClick={() => go("check")}>{t("检查")}</button>
-        <button type="button" className="btn" disabled={!j.has_score} onClick={() => go("export")}>{t("导出")}</button>
+        <button type="button" className="btn" disabled={!j.has_score} onClick={() => setChecking((c) => !c)}>{checking ? t("收起检查") : t("检查")}</button>
+        <button type="button" className="btn" disabled={!idle || !j.has_score} onClick={() => exportNow(["svp"])}>{t("存 svp")}</button>
+        <button type="button" className="btn" disabled={!idle || !j.has_score} onClick={() => exportNow(["mid"])}>{t("存 MIDI")}</button>
       </>
     );
   }
@@ -810,6 +824,14 @@ export default function FlowPage() {
         </div>
         {rows}
         <div className="actions">{actions}</div>
+        <div className="foot" style={{ justifyContent: "flex-start", gap: 10 }}>
+          <span className="muted" style={{ fontSize: 13 }}>{t("存 svp 时对齐 SV 的网格")}</span>
+          <span className="seg" role="group" aria-label={t("对齐网格")}>
+            {GRIDS.map(([g, name]) => (
+              <button key={g} type="button" className={grid === g ? "on" : ""} aria-pressed={grid === g} onClick={() => setGrid(g)}>{t(name)}</button>
+            ))}
+          </span>
+        </div>
         {hint && <p className="muted" style={{ fontSize: 13, margin: 0 }}>{hint}</p>}
         {files.length > 0 && (
           <div className="files">
@@ -821,6 +843,15 @@ export default function FlowPage() {
                   : <span className="muted" style={{ fontSize: 13 }}>{t("已存到原曲旁边")}</span>}
               </div>
             ))}
+          </div>
+        )}
+        {checking && job && j.has_score && (
+          <div className="sec" style={{ marginTop: 6 }}>
+            <div className="foot">
+              <h2>{t("检查乐谱")}</h2>
+              <button type="button" className="link" onClick={() => setChecking(false)}>{t("收起")}</button>
+            </div>
+            <CheckPage key={job.id} id={job.id} />
           </div>
         )}
         {(Object.keys(ACCEPT) as Kind[]).map((kind) => (

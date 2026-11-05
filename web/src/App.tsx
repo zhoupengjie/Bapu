@@ -8,15 +8,13 @@ import { LANGS, getLang, setLang, t, type Lang } from "./i18n";
 import LoadPanel from "./components/LoadPanel";
 import EnvPage from "./pages/EnvPage";
 import FlowPage from "./pages/FlowPage";
-import CheckPage from "./pages/CheckPage";
-import ExportPage from "./pages/ExportPage";
 
-/** One song at a time: the steps of the flow are the routes (#/env … #/export).
- *  流程 is the node graph of a project, or the new-project form when there is none. */
-export type Step = "env" | "flow" | "check" | "export";
-const STEP_ORDER: Step[] = ["env", "flow", "check", "export"];
-const TITLE: Record<Step, string> = { env: "环境", flow: "流程", check: "检查", export: "导出" }; // source text, shown through t()
-const OLD_ROUTES: Record<string, Step> = { import: "flow", run: "flow" }; // links from earlier versions
+/** Two pages: 环境 (the runtime and the models) and 流程 (the project graph; checking and
+ *  saving happen there too). The routes are #/env and #/flow. */
+export type Step = "env" | "flow";
+const STEP_ORDER: Step[] = ["env", "flow"];
+const TITLE: Record<Step, string> = { env: "环境", flow: "流程" }; // source text, shown through t()
+const OLD_ROUTES: Record<string, Step> = { import: "flow", run: "flow", check: "flow", export: "flow" }; // links from earlier versions
 
 export const go = (step: Step) => {
   window.location.hash = `/${step}`;
@@ -79,10 +77,7 @@ function steps(job: JobDetail | null, env: EnvState): StepView[] {
         ? { step: "env", status: env.updateAvailable ? t("有更新") : "", state: "done" }
         : { step: "env", status: env.runtimeMissing || env.missingModels ? t("缺 {n} 项", { n: env.missingModels + (env.runtimeMissing ? 1 : 0) }) : "", state: "warn" };
   if (!job) {
-    return [envView,
-      { step: "flow", status: "", state: env.ready ? "todo" : "locked" },
-      { step: "check", status: "", state: "locked" },
-      { step: "export", status: "", state: "locked" }];
+    return [envView, { step: "flow", status: "", state: env.ready ? "todo" : "locked" }];
   }
   const active = activeStages(job);
   const total = active.length || 9;
@@ -97,20 +92,7 @@ function steps(job: JobDetail | null, env: EnvState): StepView[] {
   else if (fresh === total && active.length) flow = { step: "flow", status: "", state: "done" };
   else if (started(job)) flow = { step: "flow", status: `${fresh}/${total}`, state: "warn" };
   else flow = { step: "flow", status: "", state: "todo" };
-  return [
-    envView,
-    flow,
-    !job.has_score
-      ? { step: "check", status: "", state: "locked" }
-      : job.attention
-        ? { step: "check", status: String(job.attention), state: "warn" }
-        : { step: "check", status: "", state: "done" },
-    !job.has_score
-      ? { step: "export", status: "", state: "locked" }
-      : job.exported_at && !job.export_stale
-        ? { step: "export", status: "", state: "done" }
-        : { step: "export", status: "", state: "todo" },
-  ];
+  return [envView, flow];
 }
 
 function ThemeButton() {
@@ -298,17 +280,15 @@ export default function App({ service = null }: { service?: Service | null }) {
   const list = steps(job, env);
   const loading = env.apiUp && (jobId === undefined || (jobId && !job));
 
-  // with no route, land where the song is: environment, the flow, or the check once there is a score
-  const landing: Step = !env.ready ? "env" : !job ? "flow" : job.has_score && job.state !== "running" ? "check" : "flow";
+  // with no route: the environment until it is ready, then the flow
+  const landing: Step = env.ready ? "flow" : "env";
   const wanted: Step = routed ?? landing;
   const shown: Step = list.find((x) => x.step === wanted)?.state === "locked" ? (env.ready ? "flow" : "env") : wanted;
 
   let page;
   if (loading) page = null;
   else if (shown === "env") page = <EnvPage />;
-  else if (shown === "flow") page = <FlowPage key={job?.id ?? "new"} />;
-  else if (shown === "check") page = <CheckPage key={job!.id} id={job!.id} />;
-  else page = <ExportPage key={job!.id} id={job!.id} />;
+  else page = <FlowPage key={job?.id ?? "new"} />;
 
   return (
     <JobContext.Provider value={ctx}>
