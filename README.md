@@ -84,8 +84,8 @@ uv run pytest                                # 单元测试（只用虚构数据
   程序文件夹要放在有写入权限的位置（不要放 C:\Program Files）。重新运行构建脚本只替换 `app/`、`tools/` 和 `Bapu.exe`，
   `runtime/`、`models/`、`data/` 保留。
 - macOS（只支持 Apple 芯片，M1 及以后，macOS 14 以上；PyTorch 不再出 Intel Mac 的版本）：在 Mac 上运行
-  `uv run python scripts/build_portable.py` 生成 `dist/Bapu.app` 和 `dist/Bapu-mac-<版本>.zip`；GitHub 上发布新版本时，
-  `.github/workflows/macos.yml` 会在 macOS 机器上跑测试、构建并把 zip 附到发布页（也可以手动运行）。和 Windows 版的区别：
+  `uv run python scripts/build_portable.py` 生成 `dist/Bapu.app` 和安装盘 `dist/Bapu-mac-<版本>.dmg`；GitHub 上发布新版本时，
+  `.github/workflows/macos.yml` 会在 macOS 机器上跑测试、构建并把 dmg 附到发布页（也可以手动运行）。和 Windows 版的区别：
   Python 环境、模型和数据放在 `~/Library/Application Support/Bapu`（不写进 Bapu.app，否则签名会失效）；推理用 Metal（MPS，
   实验），PyTorch 是 2.13.0（audio-separator 在 Apple 芯片上要求 2.13 以上）；只做了临时签名、没有公证，第一次要右键→打开；
   程序内更新只提示新版本，到发布页下载。还没在真的 Mac 上测过。

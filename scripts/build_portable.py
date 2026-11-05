@@ -20,7 +20,7 @@ rebuilding updates the program without reinstalling Python or the models.
 
 macOS (Apple chips only; PyTorch has no Intel-Mac builds):
 
-    uv run python scripts/build_portable.py       # dist/Bapu.app and dist/Bapu-mac-<version>.zip
+    uv run python scripts/build_portable.py       # dist/Bapu.app and dist/Bapu-mac-<version>.dmg
 
     Bapu.app/Contents/
       MacOS/Bapu            desktop shell (Tauri)
@@ -29,7 +29,8 @@ macOS (Apple chips only; PyTorch has no Intel-Mac builds):
 
 The bundle is ad-hoc signed and never written to at run time: Python, models
 and data go to ~/Library/Application Support/Bapu, where the shell links `app`
-and `tools` to the bundle. The zip holds Bapu.app and README.txt.
+and `tools` to the bundle. The disk image (.dmg) holds Bapu.app, a link to
+/Applications to drag it onto, and README.txt.
 """
 
 from __future__ import annotations
@@ -43,8 +44,8 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import tomllib
-import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -107,7 +108,7 @@ README_MAC = """Bapu 扒谱（macOS 版）
 
 需要 Apple 芯片（M1 及以后）的 Mac 和 macOS 14 以上。
 
-安装：解压后把 Bapu.app 拖进“应用程序”文件夹。
+安装：打开 dmg，把 Bapu 拖到旁边的“应用程序”文件夹上。
 
 第一次打开：Bapu 没有经过 Apple 公证，直接双击会被拦下。在“应用程序”里右键点 Bapu.app，选“打开”，再点“打开”；
 或者双击被拦下后，到“系统设置 → 隐私与安全性”里点“仍要打开”。以后直接双击就行。
@@ -262,13 +263,20 @@ def build_macos(args: argparse.Namespace) -> None:
     run(["codesign", "--force", "--deep", "--sign", "-", str(out)])
     run(["codesign", "--verify", "--deep", "--strict", str(out)])
 
-    zpath = out.parent / f"Bapu-mac-{version()}.zip"
-    zpath.unlink(missing_ok=True)
-    run(["ditto", "-c", "-k", "--keepParent", str(out), str(zpath)])
-    with zipfile.ZipFile(zpath, "a", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("README.txt", README_MAC.encode("utf-8-sig"))  # with a BOM, Quick Look shows the Chinese right
+    # the disk image: Bapu.app next to a link to /Applications (drag one onto the other) and the README
+    dmg = out.parent / f"Bapu-mac-{version()}.dmg"
+    dmg.unlink(missing_ok=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        stage = Path(tmp) / "Bapu"
+        stage.mkdir()
+        run(["ditto", str(out), str(stage / "Bapu.app")])  # keeps the signature, links and attributes
+        (stage / "Applications").symlink_to("/Applications")
+        (stage / "README.txt").write_bytes(README_MAC.encode("utf-8-sig"))  # BOM: Quick Look shows the Chinese right
+        run(["hdiutil", "create", "-volname", "Bapu", "-srcfolder", str(stage), "-fs", "HFS+", "-format", "UDZO",
+             "-ov", str(dmg)])
+    run(["hdiutil", "verify", str(dmg)])
     size = sum(p.stat().st_size for p in out.rglob("*") if p.is_file())
-    print(f"macOS 版：{out}（{size / 1e6:.0f} MB）；压缩包：{zpath}（{zpath.stat().st_size / 1e6:.0f} MB）")
+    print(f"macOS 版：{out}（{size / 1e6:.0f} MB）；安装盘：{dmg}（{dmg.stat().st_size / 1e6:.0f} MB）")
 
 
 def main() -> None:

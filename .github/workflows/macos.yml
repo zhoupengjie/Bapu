@@ -1,4 +1,4 @@
-# The macOS app (Apple chips): test, build Bapu.app, zip it; attach the zip to a published release.
+# The macOS app (Apple chips): test, build Bapu.app and its .dmg; attach the dmg to a published release.
 # Ad-hoc signed, not notarized (no Apple identity, no secrets). GitHub's macOS VMs have no Metal
 # (MPS) device, so the tests run on the CPU.
 name: macOS
@@ -61,7 +61,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: Bapu-mac
-          path: dist/Bapu-mac-*.zip
+          path: dist/Bapu-mac-*.dmg
           if-no-files-found: error
 
       - name: Attach to the release
@@ -69,4 +69,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.release.tag_name }}
-        run: gh release upload "$TAG" dist/Bapu-mac-*.zip --clobber
+        run: gh release upload "$TAG" dist/Bapu-mac-*.dmg --clobber
