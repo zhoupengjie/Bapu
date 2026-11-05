@@ -7,7 +7,6 @@ import { THEMES, getTheme, setTheme, type Theme } from "./theme";
 import { LANGS, getLang, setLang, t, type Lang } from "./i18n";
 import LoadPanel from "./components/LoadPanel";
 import EnvPage from "./pages/EnvPage";
-import ImportPage from "./pages/ImportPage";
 import FlowPage from "./pages/FlowPage";
 import CheckPage from "./pages/CheckPage";
 import ExportPage from "./pages/ExportPage";
@@ -307,7 +306,7 @@ export default function App({ service = null }: { service?: Service | null }) {
   let page;
   if (loading) page = null;
   else if (shown === "env") page = <EnvPage />;
-  else if (shown === "flow") page = job ? <FlowPage key={job.id} /> : <ImportPage key="new" />;
+  else if (shown === "flow") page = <FlowPage key={job?.id ?? "new"} />;
   else if (shown === "check") page = <CheckPage key={job!.id} id={job!.id} />;
   else page = <ExportPage key={job!.id} id={job!.id} />;
 
