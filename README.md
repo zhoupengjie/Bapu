@@ -88,7 +88,8 @@ uv run pytest                                # 单元测试（只用虚构数据
   hf-mirror（HuggingFace）和 ghfast.top（GitHub 加速），见 `src/bapu/mirrors.json`；模型下载和更新也跟着这个设置，
   在“环境”页可以改。不管从哪里下载都按 SHA-256 校验，镜像只决定从哪里取文件。MMS 对齐模型没有国内镜像。
 - 更新：“环境”页的清单里有 Bapu 本身（每次启动时自动检查，侧栏会提示新版本）。只下载程序部分（约 20 MB），关闭 Bapu 时由 `Bapu.exe` 校验签名后替换
-  `Bapu.exe`、`app/`、`tools/`；`runtime/`、`models/`、`data/` 不动。新版本的依赖有变化时，下次启动只补装变了的包。
+  `Bapu.exe`、`app/`、`tools/`；`runtime/`、`models/`、`data/` 不动。新版本的依赖有变化时，下次启动只补装变了的包
+  （PyTorch 没动就不再重新检查运行环境，省下导入 torch 的几秒）。
   发布新版本：`uv run python scripts/release.py --notes "…" --publish`（GitHub 发布页，附 `latest.json` 和 Ed25519 签名；
   签名私钥在 `~/.bapu/release-signing-key`，不进仓库，公钥内置在 `desktop/src-tauri/src/updater.rs`）。
   程序文件夹要放在有写入权限的位置（不要放 C:\Program Files）。重新运行构建脚本只替换 `app/`、`tools/` 和 `Bapu.exe`，

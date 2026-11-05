@@ -502,15 +502,24 @@ fn steps(ctx: &Ctx, variant: &str, source: &str, sync: bool) -> Result<Value, St
     }
 
     ctx.step(4, total, "检查运行环境");
-    let check = "import json, torch, bapu.cli\nfrom bapu.device import describe\nprint('BAPU_CHECK ' + json.dumps(describe()))";
-    let mut cmd = Command::new(&py);
-    cmd.args(["-c", check])
-        .env("PYTHONPATH", home.join("app").join("src")).env("PYTHONNOUSERSITE", "1").env("PYTHONUTF8", "1")
-        .current_dir(home);
-    runtime_env(&mut cmd, home, Some(variant));
-    let lines = ctx.run(&mut cmd)?;
-    let dev: Value = lines.iter().find_map(|l| l.strip_prefix("BAPU_CHECK ")).and_then(|j| serde_json::from_str(j).ok())
-        .ok_or("检查没有返回结果")?;
+    // Importing torch to describe the device takes a few seconds. After an update that left
+    // PyTorch alone the answer cannot have changed, so the one recorded at install time is kept;
+    // the service start that follows is the check that the packages import.
+    let kept = before.as_ref().filter(|_| !torch_changed).map(|b| b["device"].clone()).filter(|d| d.is_object());
+    let dev: Value = if let Some(d) = kept {
+        ctx.line("PyTorch 没动，沿用上次的检查结果");
+        d
+    } else {
+        let check = "import json, torch, bapu.cli\nfrom bapu.device import describe\nprint('BAPU_CHECK ' + json.dumps(describe()))";
+        let mut cmd = Command::new(&py);
+        cmd.args(["-c", check])
+            .env("PYTHONPATH", home.join("app").join("src")).env("PYTHONNOUSERSITE", "1").env("PYTHONUTF8", "1")
+            .current_dir(home);
+        runtime_env(&mut cmd, home, Some(variant));
+        let lines = ctx.run(&mut cmd)?;
+        lines.iter().find_map(|l| l.strip_prefix("BAPU_CHECK ")).and_then(|j| serde_json::from_str(j).ok())
+            .ok_or("检查没有返回结果")?
+    };
     let ready = json!({
         "variant": variant, "label": v["label"], "python": py_version, "device": dev, "source": source,
         "torch": pins(&spec, variant), "requirements_sha": sha256_file(&req),
