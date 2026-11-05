@@ -170,6 +170,14 @@ export default function FlowPage() {
     await refresh();
   }), [act, enc, job, langs, refresh]);
 
+  /** The 只… buttons: one node on its own, so its inputs must already be there. */
+  const runOnly = useCallback((n: NodeId) => {
+    const have = (stage: string) => j.stages.find((s) => s.stage === stage)?.state === "fresh";
+    if (n === "notes" && !have("lead")) return setError("先运行人声分离");
+    if (n === "lyrics" && !(have("lead") && have("tempo") && have("splits"))) return setError(have("lead") ? "先推理音符音高" : "先运行人声分离");
+    return run(n === "lyrics" ? undefined : NODE_LAST[n]);
+  }, [j.stages, run]);
+
   const stop = useCallback(() => act(async () => {
     await api.post(`/jobs/${enc}/cancel`);
     await refresh();
@@ -334,7 +342,7 @@ export default function FlowPage() {
   ];
   const nodes: NodeView[] = [
     {
-      id: "separate", title: t("分离"), steps: t("步骤 1–3"), state: nodeState("separate"), status: status("separate"),
+      id: "separate", title: t("人声分离"), steps: t("步骤 1–3"), state: nodeState("separate"), status: status("separate"),
       inputs: [{ id: "source", label: t("原曲"), on: !!j.sources?.source, kind: "data" }],
       outputs: [
         { id: "lead_dry", label: t("主唱干声"), on: fresh("lead"), kind: "audio" },
@@ -343,7 +351,7 @@ export default function FlowPage() {
       ],
     },
     {
-      id: "notes", title: t("音符"), steps: t("步骤 4–5"), state: nodeState("notes"), status: status("notes"),
+      id: "notes", title: t("音符音高推理"), steps: t("步骤 4–5"), state: nodeState("notes"), status: status("notes"),
       inputs: [
         { id: "lead_dry", label: t("主唱干声"), on: fresh("lead"), kind: "audio" },
         { id: "file", label: t("音符文件"), on: !!j.notes, kind: "notes", optional: true, file: notesFile },
@@ -351,7 +359,7 @@ export default function FlowPage() {
       outputs: [{ id: "notes", label: noteCount != null && fresh("splits") ? t("音符 · {n}", { n: noteCount }) : t("音符"), on: fresh("splits"), kind: "notes" }],
     },
     {
-      id: "lyrics", title: t("歌词"), steps: t("步骤 6–9"), state: nodeState("lyrics"), status: status("lyrics"),
+      id: "lyrics", title: t("歌词填词推理"), steps: t("步骤 6–9"), state: nodeState("lyrics"), status: status("lyrics"),
       inputs: [
         { id: "notes", label: t("音符"), on: fresh("splits"), kind: "notes" },
         { id: "lead_dry", label: t("主唱干声"), on: fresh("lead"), kind: "audio" },
@@ -419,10 +427,10 @@ export default function FlowPage() {
     const open_: Item[] = desktop && job ? [{ label: t("打开文件夹"), run: () => revealInFolder(j.folder) }] : [];
     const notYet = (what: string) => `${what} · ${t("还没有")}`;
     const fromNode = (what: string, n: NodeId, ok: boolean) => ({
-      title: `${what} · ${t(n === "separate" ? "来自分离节点" : "来自音符节点")}`,
+      title: `${what} · ${t(n === "separate" ? "来自人声分离节点" : "来自音符音高推理节点")}`,
       items: ok
-        ? [{ label: t(n === "separate" ? "看分离节点" : "看音符节点"), run: () => setSelected(n) }]
-        : [runTo(n, t(n === "separate" ? "运行分离" : "运行音符"))],
+        ? [{ label: t(n === "separate" ? "看人声分离节点" : "看音符音高推理节点"), run: () => setSelected(n) }]
+        : [runTo(n, t(n === "separate" ? "运行人声分离" : "运行音符音高推理"))],
     });
     // an item of the 输入 column offers the same as the node socket it feeds
     const COLUMN: Record<string, string> = { source: "separate/in/source", notes: "notes/in/file", lyrics: "lyrics/in/ref", lang: "lyrics/in/lang" };
@@ -523,7 +531,7 @@ export default function FlowPage() {
         {desktop && job && <button type="button" className="btn" onClick={() => revealInFolder(j.folder)}>{t("打开文件夹")}</button>}
       </>
     );
-    hint = t("存出的 .svp 只有伴奏和主唱干声两条音轨。在 SV2 里对主唱干声提取音高、保存，再到“音符”节点把那个工程选进来。");
+    hint = t("存出的 .svp 只有伴奏和主唱干声两条音轨。在 SV2 里对主唱干声提取音高、保存，再到“音符音高推理”节点把那个工程选进来。");
   } else if (node.id === "notes") {
     const merged = metric("splits", "auto_merged");
     rows = (
@@ -635,13 +643,17 @@ export default function FlowPage() {
             <span className="mono" style={{ fontSize: 18 }}>{pct}%</span>
             {!job
               ? <button type="button" className="btn primary" disabled={busy} onClick={() => pick("audio")}>{busy && <span className="spin inline" aria-hidden="true" />}{t("选择原曲…")}</button>
-              : running
-                ? <button type="button" className="btn" onClick={stop}>{t("停止")}</button>
-                : <button type="button" className={`btn ${allDone ? "" : "primary"}`} disabled={busy} onClick={() => run()}>{t("全部运行")}</button>}
+              : running && <button type="button" className="btn" onClick={stop}>{t("停止")}</button>}
           </span>
         </div>
         <div className="bar" role="progressbar" aria-label={t("总进度")} aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}>
           <i style={{ width: `${pct}%` }} />
+        </div>
+        <div className="actions" role="group" aria-label={t("运行")}>
+          <button type="button" className={`btn ${allDone ? "" : "primary"}`} disabled={!idle} onClick={() => run()}>{t("标准流程")}</button>
+          <button type="button" className="btn" disabled={!idle} onClick={() => runOnly("separate")}>{t("只分离人声")}</button>
+          <button type="button" className="btn" disabled={!idle} onClick={() => runOnly("notes")}>{t("只推理音符音高")}</button>
+          <button type="button" className="btn" disabled={!idle} onClick={() => runOnly("lyrics")}>{t("只推理歌词填词")}</button>
         </div>
         {j.state === "failed" && j.error && <div className="notice bad">{t(j.error)}</div>}
         {error && <div className="notice bad" role="alert">{t(error)}</div>}
