@@ -85,11 +85,11 @@ def test_create_in_chosen_folder_then_open_from_a_fresh_service(env, tmp_path):
 
 def test_dialog_endpoint_suggests_a_folder_next_to_the_song(env, monkeypatch):
     svc, _ = env()
-    picked = r"D:\Songs\My Song.mp4"
+    picked = str(Path.home() / "Songs" / "My Song.mp4")
     monkeypatch.setattr(dialogs, "ask", lambda kind, initial=None: picked if kind == "audio" else None)
     with TestClient(create_app(svc)) as client:
         r = client.post("/api/dialog", json={"kind": "audio"}).json()
-        assert r["path"] == picked and r["folder"] == str(Path(r"D:\Songs") / "My Song - Bapu")
+        assert r["path"] == picked and r["folder"] == str(Path(picked).parent / "My Song - Bapu")
         assert client.post("/api/dialog", json={"kind": "folder"}).json() == {"path": None}
 
 

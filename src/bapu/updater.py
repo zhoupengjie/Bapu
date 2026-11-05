@@ -53,6 +53,10 @@ def _get(urls: list[str], timeout: float = 15) -> bytes:
     raise OSError("；".join(errors) or "没有地址")
 
 
+# Bapu.exe swaps app/ on exit; the Mac app is replaced from the release page
+SELF_UPDATE = sys.platform == "win32"
+
+
 class Updater:
     def __init__(self) -> None:
         self._lock = threading.RLock()  # status() is also called while the lock is held
@@ -70,7 +74,7 @@ class Updater:
     def can_install(self) -> bool:
         """Only the Windows portable app (with its desktop shell) can swap its own files;
         on macOS a new version is announced and downloaded from the release page."""
-        return paths.home() is not None and sys.platform == "win32"
+        return paths.home() is not None and SELF_UPDATE
 
     def status(self) -> dict[str, Any]:
         last = None

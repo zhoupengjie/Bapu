@@ -37,6 +37,7 @@ def release(tmp_path, monkeypatch):
     monkeypatch.setenv("BAPU_UPDATE_URL", f"{base}/latest.json")
     monkeypatch.setenv("BAPU_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("BAPU_HOME", str(tmp_path / "home"))  # a portable install may update itself
+    monkeypatch.setattr(updater, "SELF_UPDATE", True)  # as on Windows (the Mac app does not replace itself)
     yield publish
     srv.shutdown()
 
@@ -111,3 +112,13 @@ def test_no_release_yet_is_not_an_error(release, monkeypatch):
     monkeypatch.setenv("BAPU_UPDATE_URL", os.environ["BAPU_UPDATE_URL"].replace("latest.json", "missing.json"))
     s = updater.Updater().check()
     assert s["state"] == "latest" and s["error"] is None
+
+
+def test_mac_app_only_announces(release, monkeypatch):
+    release()
+    monkeypatch.setattr(updater, "SELF_UPDATE", False)
+    u = updater.Updater()
+    assert u.check()["state"] == "available"  # the new version is still announced
+    assert u.status()["can_install"] is False
+    with pytest.raises(ValueError):
+        u.download()

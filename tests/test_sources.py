@@ -27,7 +27,7 @@ def test_china_puts_mirrors_first_and_keeps_the_originals():
 
 
 def test_auto_follows_what_was_measured(monkeypatch):
-    speeds = {sources.table()["probe"]["official"]: 1e5, sources.table()["probe"]["china"]: 5e6}
+    speeds = {sources.probe_urls()["official"]: 1e5, sources.probe_urls()["china"]: 5e6}
     monkeypatch.setattr(sources, "_speed", lambda url, **kw: speeds[url])
     assert sources.measure()["best"] == "china"
     assert sources.choice() == "auto" and sources.resolved() == "china"

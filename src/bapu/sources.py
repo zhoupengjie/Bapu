@@ -100,10 +100,15 @@ def _speed(url: str, nbytes: int = 512 * 1024, timeout: float = 8.0) -> float | 
     return got / dt if got else None
 
 
+def probe_urls() -> dict[str, str]:
+    """What the speed test downloads from each source: the PyTorch wheel this OS would install."""
+    t = table()
+    return t.get("probe_macos", t["probe"]) if sys.platform == "darwin" else t["probe"]
+
+
 def measure() -> dict[str, Any]:
     """Time the official servers and the mirrors; remember which is faster."""
-    t = table()
-    probe = t.get("probe_macos", t["probe"]) if sys.platform == "darwin" else t["probe"]
+    probe = probe_urls()
     speeds = {k: _speed(probe[k]) for k in ("official", "china")}
     o, c = speeds["official"], speeds["china"]
     best = "china" if (c and (not o or c > o * 1.2)) else "official"
