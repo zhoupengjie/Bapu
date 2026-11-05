@@ -165,6 +165,16 @@ def create_app(service: JobService, static_dir: Path | None = None) -> FastAPI:
     def models() -> list[dict[str, Any]]:
         return service.models()
 
+    @app.get("/api/modes/{mode}/models")
+    def mode_models(mode: str) -> list[dict[str, Any]]:
+        """The models a project of this mode runs with by default (before it exists), with status."""
+        return service.mode_models(mode)
+
+    @app.get("/api/jobs/{job_id}/models")
+    def job_models(job_id: str, until: str | None = None) -> list[dict[str, Any]]:
+        """The models the project's next run needs: given files replace their stages."""
+        return service.needed(job_id, until)
+
     @app.post("/api/models/{model_id}/pull", status_code=202)
     def pull(model_id: str, body: PullBody) -> dict[str, str]:
         service.pull(model_id, body.accept_license)

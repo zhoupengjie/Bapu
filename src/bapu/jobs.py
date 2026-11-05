@@ -68,21 +68,30 @@ def artifact(wd: WorkDir, name: str, sources: dict[str, Path] | None = None) -> 
     return p if p is not None and p.exists() else None
 
 
-def missing_models(sources: dict[str, Path], overrides: dict[str, dict[str, Any]], registry: Registry,
-                   until: str | None = None, stages: Sequence[Stage] = STAGES) -> list[ModelSpec]:
-    """Models the run will need that are not downloaded and verified yet."""
+def needed_models(sources: dict[str, Any], overrides: dict[str, dict[str, Any]], registry: Registry,
+                  until: str | None = None, stages: Sequence[Stage] = STAGES) -> list[tuple[Stage, ModelSpec]]:
+    """The models of the stages a run would execute (not those replaced by a
+    user-supplied artifact or left out for lack of an input), in stage order.
+    `sources` only needs the artifact names as keys."""
     planned = pipeline.plan({n: "?" for n in sources}, overrides, stages=stages)
-    out: list[ModelSpec] = []
+    out: list[tuple[Stage, ModelSpec]] = []
     for st in stages:
         if st.name not in planned.keys:
             continue  # its output comes from the user, or an input is missing: no model needed
         params = pipeline.resolve_params(st, overrides.get(st.name), set(sources) & set(st.inputs))
         for spec in pipeline.resolve_models(st, params, registry).values():
-            if spec is not None and registry.status(spec) not in ("ready", "builtin") and spec not in out:
-                out.append(spec)
+            if spec is not None and spec.needs_files and all(s is not spec for _, s in out):
+                out.append((st, spec))
         if until and st.name == until:
             break
     return out
+
+
+def missing_models(sources: dict[str, Any], overrides: dict[str, dict[str, Any]], registry: Registry,
+                   until: str | None = None, stages: Sequence[Stage] = STAGES) -> list[ModelSpec]:
+    """Models the run will need that are not downloaded and verified yet."""
+    return [spec for _, spec in needed_models(sources, overrides, registry, until, stages)
+            if registry.status(spec) not in ("ready", "builtin")]
 
 
 def audio_tracks(wd: WorkDir, spec: str, sources: dict[str, Path] | None = None) -> list[tuple[str, Path]]:

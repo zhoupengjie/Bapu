@@ -12,7 +12,7 @@ import { t } from "../i18n";
 export type NodeId = "separate" | "notes" | "lyrics";
 /** Where a socket lives: a processing node, or the 输入 column. */
 export type Port = NodeId | "inputs";
-export type NodeState = "empty" | "stale" | "done" | "running" | "failed";
+export type NodeState = "empty" | "stale" | "done" | "running" | "failed" | "needs"; // needs: a model to download first
 export type SocketKind = "audio" | "notes" | "data";
 export type Socket = {
   id: string;
@@ -49,10 +49,10 @@ const LABEL = 18;
 const LANE = 12;
 
 const COLOR: Record<SocketKind, string> = { audio: "var(--ok)", notes: "var(--accent)", data: "var(--muted)" };
-const STATE_LABEL: Record<NodeState, string> = { empty: "", stale: "要重算", done: "已算好", running: "运行中", failed: "出错了" };
+const STATE_LABEL: Record<NodeState, string> = { empty: "", stale: "要重算", done: "已算好", running: "运行中", failed: "出错了", needs: "缺模型" };
 const STATE_FILL: Record<NodeState, [string, string]> = {
   empty: ["transparent", "var(--muted)"], stale: ["var(--warn-soft)", "var(--warn)"], done: ["var(--ok-soft)", "var(--ok)"],
-  running: ["var(--accent-soft)", "var(--accent-text)"], failed: ["var(--warn-soft)", "var(--warn)"],
+  running: ["var(--accent-soft)", "var(--accent-text)"], failed: ["var(--warn-soft)", "var(--warn)"], needs: ["var(--warn-soft)", "var(--warn)"],
 };
 
 type Geo = { x: number; y: number; w: number; h: number; inY: (k: number) => number; outY: (k: number) => number };
@@ -189,11 +189,13 @@ export default function FlowGraph({ inputs, nodes, wires, selected, onSelect, on
           const on = n.id === selected;
           const [bg, fg] = STATE_FILL[n.state];
           const state = STATE_LABEL[n.state] ? t(STATE_LABEL[n.state]) : "";
-          const pill = state ? state + (n.status ? ` · ${n.status}` : "") : n.status ?? "";
+          const full = state ? state + (n.status ? ` · ${n.status}` : "") : n.status ?? "";
+          // the pill shares the header with the title: keep it short (the full text is the label)
+          const pill = n.state === "needs" ? `${t("缺")} ${n.status ?? ""}` : n.state === "running" ? n.status ?? state : state;
           const pillW = Math.max(0, pill.length * 8 + 16);
           return (
             <g key={n.id} className="flow-node" role="button" tabIndex={0} aria-pressed={on}
-              aria-label={`${n.title}${pill ? `，${pill}` : ""}`}
+              aria-label={`${n.title}${full ? `，${full}` : ""}`}
               onClick={() => onSelect(n.id)}
               onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(n.id); } }}>
               <rect className="flow-box" x={g.x} y={g.y} width={g.w} height={g.h} rx={12} fill="var(--surface-2)"

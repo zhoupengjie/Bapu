@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, api, apiUrl, follow, type JobDetail, type Mode, type StageInfo, type SvTrack } from "../api";
 import FlowGraph, { type Anchor, type NodeId, type NodeState, type NodeView, type Port, type Side, type Socket, type Wire } from "../components/FlowGraph";
-import { go, started, useJob } from "../App";
+import { started, useJob } from "../App";
 import { desktopPick, inDesktop, onDesktopDrop, revealInFolder } from "../desktop";
 import { STAGE_LABEL } from "../env";
 import { t } from "../i18n";
@@ -84,6 +84,9 @@ function takenFolder(e: unknown): string | null {
 /** A chosen file: a real path (system dialog, desktop drop) or a file picked in the browser (uploaded). */
 type Picked = { path?: string; file?: File; name: string };
 type Live = { stage: string; fraction: number | null };
+/** A model a run needs, from /api/jobs/{id}/models or /api/modes/{mode}/models. */
+type Needed = { stage: string; id: string; name: string; size: number | null; status: "ready" | "missing" | "corrupt" | "builtin" };
+const gb = (bytes: number) => (bytes / 1e9).toFixed(1);
 type Written = { format: string; name: string; size: number };
 /** The menu under a clicked socket: give a file to an input, save or run for an output. */
 type Menu = { node: Port; side: Side; socket: string; anchor: Anchor };
@@ -93,7 +96,7 @@ type Item = {
 };
 
 export default function FlowPage() {
-  const { job, refresh, open } = useJob();
+  const { job, refresh, open, env } = useJob();
   const j = job ?? NO_JOB;
   const [modeChoice, setModeChoice] = useState<Mode>("standard");
   const mode: Mode = job ? j.mode : modeChoice;
@@ -112,6 +115,8 @@ export default function FlowPage() {
   const [files, setFiles] = useState<Written[]>([]);
   const [grid, setGridState] = useState(savedGrid);
   const [checking, setChecking] = useState(false); // the piano roll and the attention list, under the panel
+  const [needed, setNeeded] = useState<Needed[]>([]); // the models this mode / project runs with
+  const [autoRun, setAutoRun] = useState<{ until?: string } | null>(null); // run once the downloads are done
   // before the project exists: the files and tempo chosen so far, the file whose folder was taken
   const [pre, setPre] = useState<Partial<Record<Kind, Picked>>>({});
   const [preTempo, setPreTempo] = useState<number | null>(null);
@@ -165,6 +170,13 @@ export default function FlowPage() {
     };
   }, [menu]);
 
+  const dlState = env.downloads?.state;
+  useEffect(() => {
+    if (!env.apiUp) return;
+    const url = job ? `/jobs/${enc}/models${MODE.until ? `?until=${MODE.until}` : ""}` : `/modes/${mode}/models`;
+    api.get<Needed[]>(url).then(setNeeded).catch(() => setNeeded([]));
+  }, [env.apiUp, job, enc, mode, MODE.until, dlState, env.missingModels]);
+
   const act = useCallback(async (f: () => Promise<void>) => {
     setBusy(true);
     setError(null);
@@ -211,6 +223,31 @@ export default function FlowPage() {
       /* storage unavailable */
     }
   };
+
+  const missing = needed.filter((m) => m.status === "missing" || m.status === "corrupt");
+  const missingSize = missing.reduce((n, m) => n + (m.size ?? 0), 0);
+
+  /** Queue the missing models; with `until` set, the run starts when they are in. */
+  const download = useCallback((ids: string[], then?: { until?: string }) => act(async () => {
+    await api.post("/downloads/start", { ids });
+    if (then) setAutoRun(then);
+    await env.refresh();
+  }), [act, env]);
+
+  // the downloads finished (or stopped): run, or say why not
+  useEffect(() => {
+    if (!autoRun || !env.downloads) return;
+    if (env.downloads.state === "downloading") return;
+    if (env.downloads.state === "failed" || env.downloads.state === "paused") {
+      setError(env.downloads.state === "failed" ? t("下载出错：{error}", { error: env.downloads.error ?? "" }) : t("下载已暂停"));
+      setAutoRun(null);
+      return;
+    }
+    if (missing.length === 0 && needed.length > 0) {
+      setAutoRun(null);
+      run(autoRun.until);
+    }
+  }, [autoRun, env.downloads, missing.length, needed.length, run]);
 
   /** Give the project a file; a 409 means several SV tracks have notes and one must be chosen. */
   const submit = useCallback((kind: Kind, p: Picked, chosen?: number) => act(async () => {
@@ -367,16 +404,23 @@ export default function FlowPage() {
   const stepName = (name: string | null) => (name ? label(name, info(name)?.title ?? name) : "");
   const groups = NODE_STAGES[mode];
 
+  const missingFor = (n: NodeId) => missing.filter((m) => (groups[n] ?? []).includes(m.stage));
   const nodeState = (n: NodeId): NodeState => {
     const group = groups[n] ?? [];
     if (nowStage && group.includes(nowStage)) return "running";
     if (j.state === "failed" && j.stage && group.includes(j.stage)) return "failed";
+    if (!running && missingFor(n).length) return "needs";
     const states = group.map((s) => rowOf(s)?.state ?? "missing").filter((s) => s !== "skipped" && s !== "blocked");
     if (states.length && states.every((s) => s === "fresh")) return "done";
     if (states.every((s) => s === "missing")) return "empty";
     return "stale";
   };
-  const status = (n: NodeId) => (nodeState(n) === "running" ? stepName(nowStage) : undefined);
+  const status = (n: NodeId) => {
+    const st = nodeState(n);
+    if (st === "running") return stepName(nowStage);
+    if (st === "needs") return `${gb(missingFor(n).reduce((a, m) => a + (m.size ?? 0), 0))} GB`;
+    return undefined;
+  };
 
   // what is there, from a stage or from a file the user gave
   const given = (name: string) => (job ? !!j.sources?.[name] : !!pre[name as Kind]);
@@ -769,7 +813,10 @@ export default function FlowPage() {
               ? <button type="button" className="btn primary" disabled={busy} onClick={() => pick(MODE.primary)}>{busy && <span className="spin inline" aria-hidden="true" />}{primaryLabel}</button>
               : running
                 ? <button type="button" className="btn" onClick={stop}>{t("停止")}</button>
-                : <button type="button" className={`btn ${allDone ? "" : "primary"}`} disabled={busy} onClick={() => run(MODE.until)}>{t("运行")}</button>}
+                : missing.length
+                  ? <button type="button" className="btn primary" disabled={busy || env.busy} onClick={() => download(missing.map((m) => m.id), { until: MODE.until })}>
+                    {t("下载缺的模型并运行（{size} GB）", { size: gb(missingSize) })}</button>
+                  : <button type="button" className={`btn ${allDone ? "" : "primary"}`} disabled={busy} onClick={() => run(MODE.until)}>{t("运行")}</button>}
           </span>
         </div>
         <div className="bar" role="progressbar" aria-label={t("总进度")} aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}>
@@ -779,9 +826,12 @@ export default function FlowPage() {
         {error && <div className="notice bad" role="alert">{t(error)}</div>}
         {needsEnv && (
           <div className="notice bad foot">
-            <span>{t("还缺模型")}</span>
-            <button type="button" className="btn" onClick={() => go("env")}>{t("去环境")}</button>
+            <span>{t("缺 {n} 个模型，{size} GB", { n: missing.length, size: gb(missingSize) })}</span>
+            <button type="button" className="btn" disabled={busy || env.busy} onClick={() => { setNeedsEnv(false); download(missing.map((m) => m.id), { until: MODE.until }); }}>{t("下载（{size} GB）", { size: gb(missingSize) })}</button>
           </div>
+        )}
+        {autoRun && env.downloads?.state === "downloading" && (
+          <div className="notice">{t("下载完成后会自动开始运行")}</div>
         )}
         {taken && (
           <div className="notice foot">
@@ -823,6 +873,44 @@ export default function FlowPage() {
           </p>
         </div>
         {rows}
+        {(() => {
+          const mine = needed.filter((m) => (groups[panelNode.id] ?? []).includes(m.stage));
+          const lacking = mine.filter((m) => m.status === "missing" || m.status === "corrupt");
+          const dl = env.downloads;
+          if (!mine.length) return null;
+          return (
+            <div className="rows">
+              {mine.map((m) => {
+                const item = dl?.items.find((i) => i.id === m.id);
+                const current = dl?.state === "downloading" && dl.current === m.id;
+                const queued = dl?.queue.includes(m.id) && (dl.state === "downloading" || dl.state === "paused");
+                return (
+                  <div key={m.id} className="row">
+                    <span className="k">{t(STAGE_LABEL[m.stage] ?? m.stage)}</span>
+                    <span className="v">{m.name}</span>
+                    <span className="muted" style={{ fontSize: 13 }}>
+                      {m.status === "ready" || m.status === "builtin" ? yes
+                        : current && item ? t("正在下载 {name} {pct}%", { name: "", pct: Math.round((item.done / Math.max(1, item.size)) * 100) })
+                          : queued ? t("等待") : t("缺 · {size} GB", { size: gb(m.size ?? 0) })}
+                    </span>
+                  </div>
+                );
+              })}
+              {lacking.length > 0 && !running && (
+                <div className="row">
+                  <span className="k" />
+                  <span className="v">
+                    {dl?.state === "paused"
+                      ? <button type="button" className="link" disabled={busy} onClick={() => download(lacking.map((m) => m.id))}>{t("继续下载")}</button>
+                      : dl?.state === "downloading"
+                        ? <span className="muted" style={{ fontSize: 13 }}>{t("正在下载 {name} {pct}%", { name: dl.items.find((i) => i.id === dl.current)?.name ?? "", pct: Math.round(((dl.items.find((i) => i.id === dl.current)?.done ?? 0) / Math.max(1, dl.items.find((i) => i.id === dl.current)?.size ?? 1)) * 100) })}</span>
+                        : <button type="button" className="btn" disabled={busy || env.busy} onClick={() => download(lacking.map((m) => m.id))}>{t("下载（{size} GB）", { size: gb(lacking.reduce((a, m) => a + (m.size ?? 0), 0)) })}</button>}
+                  </span>
+                </div>
+              )}
+            </div>
+          );
+        })()}
         <div className="actions">{actions}</div>
         <div className="foot" style={{ justifyContent: "flex-start", gap: 10 }}>
           <span className="muted" style={{ fontSize: 13 }}>{t("存 svp 时对齐 SV 的网格")}</span>

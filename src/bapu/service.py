@@ -40,6 +40,10 @@ SOURCE_OF = {"audio": "source", "lyrics": "lyrics", "notes": "notes", "lead_dry"
 # What a project starts from: the song (standard: everything; separate: the stems only), or the
 # dry lead the user already has (notes: the transcription; lyrics: the lyrics on given notes).
 MODES = ("standard", "separate", "notes", "lyrics")
+# what a project of each mode has when it runs, and the last step it runs (None: all of them)
+MODE_SOURCES = {"standard": ("source",), "separate": ("source",), "notes": ("lead_dry",), "lyrics": ("lead_dry", "notes", "tempo")}
+MODE_UNTIL = {"standard": None, "separate": "tempo", "notes": "splits", "lyrics": None}
+MODE_LABEL = {"standard": "标准流程", "separate": "只分离人声", "notes": "只推理音符音高", "lyrics": "只推理歌词填词"}
 
 
 class ServiceError(Exception):
@@ -145,6 +149,7 @@ class JobService:
         # the models the default pipeline uses, for the 环境 page's one download queue
         self.downloads = Downloads(self.registry, [
             s.defaults[p] for s in self.stages for p in s.model_params if isinstance(s.defaults.get(p), str)])
+        self.downloads.modes_of = self.model_modes
 
     # -- lifecycle -------------------------------------------------------------
     def start(self) -> None:
@@ -535,12 +540,37 @@ class JobService:
         return {"text": text, "version": _version(text)}
 
     # -- models ----------------------------------------------------------------------
+    def _model_rows(self, needed: list[tuple[Stage, ModelSpec]]) -> list[dict[str, Any]]:
+        return [{"stage": st.name, "id": spec.id, "name": spec.name, "size": spec.total_size,
+                 "status": self.registry.status(spec)} for st, spec in needed]
+
+    def needed(self, job_id: str, until: str | None = None) -> list[dict[str, Any]]:
+        """The models the project's next run needs (given files replace their stages), with status."""
+        wd = self.workdir(job_id)
+        until = until or MODE_UNTIL.get(self._meta(wd).get("mode") or "standard")
+        try:
+            return self._model_rows(jobs.needed_models(self.sources(wd), wd.load_params(), self.registry, until, self.stages))
+        except pipeline.PipelineError as e:
+            raise ServiceError(str(e)) from None
+
+    def mode_models(self, mode: str) -> list[dict[str, Any]]:
+        """The models a project of `mode` needs with the default settings (before it exists)."""
+        if mode not in MODES:
+            raise NotFound(f"没有这种模式：{mode}")
+        sources = {n: None for n in MODE_SOURCES[mode]}
+        return self._model_rows(jobs.needed_models(sources, {}, self.registry, MODE_UNTIL[mode], self.stages))
+
+    def model_modes(self, model_id: str) -> list[str]:
+        """Which modes use a model (for the 环境 page)."""
+        return [m for m in MODES if any(r["id"] == model_id for r in self.mode_models(m))]
+
     def models(self) -> list[dict[str, Any]]:
         out = []
         for spec in self.registry.models.values():
             out.append({
                 "id": spec.id, "stage": spec.stage, "name": spec.name, "backend": spec.backend,
                 "verified": spec.verified, "size": spec.total_size, "status": self.registry.status(spec),
+                "modes": self.model_modes(spec.id),
                 "license": vars(spec.license), "license_accepted": self.registry.license_accepted(spec),
                 "downloading": spec.id in self._pulls and self._pulls[spec.id].is_alive(),
                 "download": self.registry.download_info(spec),

@@ -442,3 +442,26 @@ def test_notes_mode_starts_from_the_dry_lead(env, tmp_path):
         assert job["mode"] == "notes" and job["sources"] == {"lead_dry": "lead.wav"}
         assert (tmp_path / "p" / ".bapu" / "inputs" / "lead.wav").exists()
         assert client.get("/api/jobs").json()[0]["mode"] == "notes"
+
+
+def test_models_needed_per_mode_and_per_project(env, tmp_path):
+    """Only the models of the stages that will run: a mode without the song does
+    not need the stage that reads it; given files remove their stage's model."""
+    from bapu.downloads import Downloads
+
+    svc, audio = env()
+    first, slow = make_stages()
+    svc.stages = (first, Stage("slow", 2, "1", ("x", "lyrics"), ("y",), {"model": "net"}, slow.run,
+                               model_params={"model": "algo"}, optional_inputs=("lyrics",), title="二"))
+    svc.downloads = Downloads(svc.registry, ["net"])
+    svc.downloads.modes_of = svc.model_modes
+    with TestClient(create_app(svc)) as client:
+        assert [(m["id"], m["status"]) for m in client.get("/api/modes/standard/models").json()] == [("net", "missing")]
+        assert client.get("/api/modes/lyrics/models").json() == []  # `slow` needs x, which only `first` makes from the song
+        assert client.get("/api/modes/nope/models").status_code == 404
+        items = {i["id"]: i for i in client.get("/api/downloads").json()["items"]}
+        assert items["net"]["modes"] == ["standard", "separate"]
+        job = client.post("/api/jobs", data={"audio_path": str(audio)}).json()
+        got = client.get(f"/api/jobs/{job['id']}/models").json()
+        assert [(m["stage"], m["id"], m["status"]) for m in got] == [("slow", "net", "missing")]
+        assert client.get(f"/api/jobs/{job['id']}/models?until=first").json() == []

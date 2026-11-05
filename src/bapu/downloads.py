@@ -30,6 +30,7 @@ class Downloads:
         self._bytes = 0  # written in this session, for the speed
         self._rate = 0.0
         self._last = (time.monotonic(), 0)
+        self.modes_of = None  # model id -> the modes that use it (set by the service), for the 环境 page
 
     # -- control ------------------------------------------------------------------
     def specs(self) -> list[ModelSpec]:
@@ -115,6 +116,6 @@ class Downloads:
             total = s.total_size or 0
             done = total if st in ("ready", "builtin") else min(total, self.registry.downloaded(s)) if total else 0
             items.append({"id": s.id, "stage": s.stage, "name": s.name, "status": st, "size": total, "done": done,
-                          "license": vars(s.license)})
+                          "license": vars(s.license), "modes": self.modes_of(s.id) if self.modes_of else []})
         return {"state": self.state, "current": self.current, "queue": list(self._queue), "error": self.error,
                 "speed": self._speed(), "threads": sources.threads(), "items": items}

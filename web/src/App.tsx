@@ -74,7 +74,7 @@ function steps(job: JobDetail | null, env: EnvState): StepView[] {
     : env.paused
       ? { step: "env", status: t("已暂停"), state: "warn" }
       : env.ready
-        ? { step: "env", status: env.updateAvailable ? t("有更新") : "", state: "done" }
+        ? { step: "env", status: env.missingModels ? t("缺 {n} 个模型", { n: env.missingModels }) : env.updateAvailable ? t("有更新") : "", state: "done" }
         : { step: "env", status: env.runtimeMissing || env.missingModels ? t("缺 {n} 项", { n: env.missingModels + (env.runtimeMissing ? 1 : 0) }) : "", state: "warn" };
   if (!job) {
     return [envView, { step: "flow", status: "", state: env.ready ? "todo" : "locked" }];

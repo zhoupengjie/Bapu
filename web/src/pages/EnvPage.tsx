@@ -75,11 +75,13 @@ export default function EnvPage() {
   // ---- the model rows (before the Python service runs: what the desktop shell knows)
   const pausedId = downloads?.state === "paused" ? downloads.current ?? downloads.queue[0] ?? null : null;
   const source = downloads
-    ? downloads.items.map((i) => ({ id: i.id, stage: i.stage, name: i.name, size: i.size, got: i.done, ok: i.status === "ready" || i.status === "builtin" }))
-    : (setup?.models ?? []).map((m) => ({ id: m.id, stage: m.stage, name: m.name, size: m.size, got: m.builtin ? m.size : 0, ok: m.builtin }));
+    ? downloads.items.map((i) => ({ id: i.id, stage: i.stage, name: i.name, size: i.size, got: i.done, ok: i.status === "ready" || i.status === "builtin", modes: i.modes ?? [] }))
+    : (setup?.models ?? []).map((m) => ({ id: m.id, stage: m.stage, name: m.name, size: m.size, got: m.builtin ? m.size : 0, ok: m.builtin, modes: [] as string[] }));
+  const MODE_LABEL: Record<string, string> = { standard: "标准流程", separate: "只分离人声", notes: "只推理音符音高", lyrics: "只推理歌词填词" };
   const rank = (stage: string) => (STAGE_ORDER.includes(stage) ? STAGE_ORDER.indexOf(stage) : STAGE_ORDER.length);
   const models: Row[] = [...source].sort((a, b) => rank(a.stage) - rank(b.stage)).map((m) => {
-    const r: Row = { key: `m:${m.id}`, name: STAGE_LABEL[m.stage] ? t(STAGE_LABEL[m.stage]) : m.name, size: m.size, got: m.got, done: m.ok, now: false, paused: false, st: "" };
+    const uses = m.modes.filter((x) => x !== "standard").map((x) => t(MODE_LABEL[x] ?? x)).join("、");
+    const r: Row = { key: `m:${m.id}`, name: (STAGE_LABEL[m.stage] ? t(STAGE_LABEL[m.stage]) : m.name) + (uses ? ` · ${uses}` : ""), size: m.size, got: m.got, done: m.ok, now: false, paused: false, st: "" };
     if (m.ok) r.got = m.size;
     else if (modelsBusy && downloads?.current === m.id) {
       r.now = true;

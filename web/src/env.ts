@@ -6,7 +6,7 @@ import { inDesktop, invoke, onDesktopEvent, type Service } from "./desktop";
 
 export type DlItem = {
   id: string; stage: string; name: string; status: "ready" | "missing" | "corrupt" | "builtin";
-  size: number; done: number; license: { name: string; url: string; commercial: string };
+  size: number; done: number; license: { name: string; url: string; commercial: string }; modes?: string[];
 };
 export type Downloads = {
   state: "idle" | "downloading" | "paused" | "failed"; current: string | null; queue: string[];
@@ -146,7 +146,8 @@ export function useEnvState(service: Service | null) {
     ? downloads.items.filter((i) => i.status === "missing" || i.status === "corrupt").length
     : setup?.models.filter((m) => !m.builtin).length ?? 0;
   const runtimeMissing = runtime.state !== "ready";
-  const ready = !runtimeMissing && downloads != null && missingModels === 0;
+  // the flow needs the runtime; models are fetched per mode when a run needs them (see FlowPage)
+  const ready = !runtimeMissing && downloads != null;
   const updateAvailable = update?.state === "available" && update.can_install ? update.latest?.version ?? null : null;
 
   // keep it live while something is moving
